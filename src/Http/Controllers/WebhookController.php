@@ -37,7 +37,7 @@ class WebhookController
         }
 
         // A redelivery of an event that was never processed (e.g. the dispatch failed) is queued again; the job is
-        // unique per event and skips processed ones, so duplicates do no harm.
+        // skips processed ones, so duplicates do no harm.
         if ($event->processed_at === null) {
             ProcessWebhookEventJob::dispatch($event->id);
         }

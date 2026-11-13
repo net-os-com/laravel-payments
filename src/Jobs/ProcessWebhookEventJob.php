@@ -2,7 +2,6 @@
 
 namespace NetOS\Payments\Jobs;
 
-use Illuminate\Contracts\Queue\ShouldBeUnique;
 use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Queue\Queueable;
 use NetOS\Payments\Actions\SyncPaymentAccountAction;
@@ -13,7 +12,11 @@ use NetOS\Payments\Models\PaymentAccount;
 use NetOS\Payments\Models\PaymentWebhookEvent;
 use Throwable;
 
-class ProcessWebhookEventJob implements ShouldBeUnique, ShouldQueue
+/**
+ * Not unique on purpose: a redelivery must be able to queue an event again when an earlier dispatch was lost. The job
+ * skips processed events, and what it announces is safe to handle twice.
+ */
+class ProcessWebhookEventJob implements ShouldQueue
 {
     use Queueable;
 
@@ -22,17 +25,9 @@ class ProcessWebhookEventJob implements ShouldBeUnique, ShouldQueue
     /** @var list<int> */
     public array $backoff = [10, 60, 300, 900];
 
-    /** While one attempt for an event is queued or running, another dispatch of it is dropped. */
-    public int $uniqueFor = 3600;
-
     public function __construct(public readonly int $webhookEventId)
     {
         $this->onQueue(config('payments.queue'));
-    }
-
-    public function uniqueId(): string
-    {
-        return (string) $this->webhookEventId;
     }
 
     public function handle(): void
