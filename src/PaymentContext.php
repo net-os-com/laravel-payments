@@ -22,6 +22,12 @@ final readonly class PaymentContext
         public ?string $providerAccountId,
         public CapabilitySourcesData $sources,
         public ?IssuerData $issuer = null,
+        /**
+         * Extra parameters for links the package signs, e.g. the tenant, so a document link opens in the right context.
+         *
+         * @var array<string, string>
+         */
+        public array $urlParameters = [],
     ) {}
 
     /**
@@ -34,7 +40,7 @@ final readonly class PaymentContext
 
     public function withAccount(?string $providerAccountId): self
     {
-        return new self($this->provider, $providerAccountId, $this->sources, $this->issuer);
+        return new self($this->provider, $providerAccountId, $this->sources, $this->issuer, $this->urlParameters);
     }
 
     /**
@@ -42,7 +48,7 @@ final readonly class PaymentContext
      */
     public function withSources(CapabilitySourcesData $sources): self
     {
-        return new self($this->provider, $this->providerAccountId, $sources, $this->issuer);
+        return new self($this->provider, $this->providerAccountId, $sources, $this->issuer, $this->urlParameters);
     }
 
     public function withDiscountSource(Enums\CapabilitySource $source): self

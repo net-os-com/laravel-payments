@@ -6,6 +6,7 @@ use NetOS\Payments\Contracts\ProvidesInvoices;
 use NetOS\Payments\Data\InvoiceData;
 use NetOS\Payments\Data\IssueInvoiceData;
 use NetOS\Payments\Enums\CapabilitySource;
+use NetOS\Payments\Events\PaymentInvoiceIssued;
 use NetOS\Payments\Exceptions\HandledByCheckoutException;
 use NetOS\Payments\PaymentContext;
 use Stripe\StripeClient;
@@ -63,9 +64,13 @@ class StripeInvoiceDriver implements ProvidesInvoices
             $params['refunds'] = [['refund' => $providerRefundId, 'amount_refunded' => $amount]];
         }
 
-        $creditNote = $this->stripe->creditNotes->create($params, ['stripe_account' => $context->requireAccount()]);
+        $creditNote = $this->stripe->creditNotes->create(
+            $params,
+            ['stripe_account' => $context->requireAccount()],
+        );
+        $invoice = $this->stripe->invoices->retrieve($invoiceReference, [], ['stripe_account' => $context->requireAccount()]);
 
-        return new InvoiceData(
+        $document = new InvoiceData(
             source: CapabilitySource::STRIPE,
             reference: $creditNote->id,
             number: $creditNote->number,
@@ -75,5 +80,14 @@ class StripeInvoiceDriver implements ProvidesInvoices
             type: 'credit_note',
             creditsReference: $invoiceReference,
         );
+
+        // Stripe does not email credit notes, so the application delivers them like local documents.
+        PaymentInvoiceIssued::dispatch(
+            $document,
+            (string) ($invoice->metadata['payment_uuid'] ?? $invoice->id),
+            $invoice->customer_email,
+        );
+
+        return $document;
     }
 }

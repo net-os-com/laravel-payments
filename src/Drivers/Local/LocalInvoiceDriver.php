@@ -7,10 +7,11 @@ use NetOS\Payments\Contracts\ProvidesInvoices;
 use NetOS\Payments\Data\InvoiceData;
 use NetOS\Payments\Data\IssueInvoiceData;
 use NetOS\Payments\Data\TaxedLineData;
-use NetOS\Payments\Enums\CapabilitySource;
 use NetOS\Payments\Models\PaymentInvoice;
 use NetOS\Payments\PaymentContext;
+use NetOS\Payments\Jobs\RenderInvoicePdfJob;
 use NetOS\Payments\Support\DocumentNumberer;
+use NetOS\Payments\Support\LocalDocumentPresenter;
 use InvalidArgumentException;
 use RuntimeException;
 
@@ -21,6 +22,7 @@ class LocalInvoiceDriver implements ProvidesInvoices
 {
     public function __construct(
         private readonly DocumentNumberer $numberer,
+        private readonly LocalDocumentPresenter $presenter,
         private readonly string $invoiceSeries,
         private readonly string $creditNoteSeries,
     ) {}
@@ -57,12 +59,14 @@ class LocalInvoiceDriver implements ProvidesInvoices
             ]);
         });
 
-        return $this->toData($invoice);
+        RenderInvoicePdfJob::dispatch($invoice->id, $context->urlParameters)->afterCommit();
+
+        return $this->presenter->present($invoice, $context->urlParameters);
     }
 
     public function find(PaymentContext $context, string $invoiceReference): InvoiceData
     {
-        return $this->toData(PaymentInvoice::query()->findOrFail($invoiceReference));
+        return $this->presenter->present(PaymentInvoice::query()->findOrFail($invoiceReference), $context->urlParameters);
     }
 
     public function creditNote(
@@ -112,7 +116,9 @@ class LocalInvoiceDriver implements ProvidesInvoices
             },
         );
 
-        return $this->toData($creditNote);
+        RenderInvoicePdfJob::dispatch($creditNote->id, $context->urlParameters)->afterCommit();
+
+        return $this->presenter->present($creditNote, $context->urlParameters);
     }
 
     /**
@@ -151,19 +157,5 @@ class LocalInvoiceDriver implements ProvidesInvoices
         }
 
         return $lines;
-    }
-
-    private function toData(PaymentInvoice $invoice): InvoiceData
-    {
-        return new InvoiceData(
-            source: CapabilitySource::LOCAL,
-            reference: (string) $invoice->id,
-            number: $invoice->number,
-            status: $invoice->status,
-            hostedUrl: null,
-            pdfUrl: null,
-            type: $invoice->type,
-            creditsReference: $invoice->credits_invoice_id === null ? null : (string) $invoice->credits_invoice_id,
-        );
     }
 }

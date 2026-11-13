@@ -16,6 +16,15 @@ return [
     // | The webhook route is registered as {prefix}/{provider}.
     'webhook_path' => 'payments/webhooks',
 
+    /*
+    | The signed routes of local invoices and credit notes: {prefix}/{document} (page) and {prefix}/{document}/pdf.
+    | Add the middleware that puts the request in the right context, e.g. the tenancy middleware.
+    */
+    'routes' => [
+        'documents_prefix' => 'payments/documents',
+        'documents_middleware' => [],
+    ],
+
     'stripe' => [
         'secret' => env('STRIPE_SECRET'),
         // Each event destination signs with its own secret: one for snapshot events of connected accounts, one for
@@ -35,6 +44,8 @@ return [
     'local' => [
         'invoice_number_prefix' => env('PAYMENTS_INVOICE_PREFIX', 'INV'),
         'credit_note_number_prefix' => env('PAYMENTS_CREDIT_NOTE_PREFIX', 'CN'),
+        // The disk the PDFs of local documents are stored on; web and queue workers must both reach it.
+        'invoice_disk' => env('PAYMENTS_INVOICE_DISK', 'local'),
         'tax_country' => env('PAYMENTS_TAX_COUNTRY', 'nl'),
     ],
 ];

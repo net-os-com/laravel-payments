@@ -22,7 +22,10 @@ class PaymentsServiceProvider extends ServiceProvider
     {
         $this->loadMigrationsFrom(__DIR__ . '/../database/migrations');
         $this->loadRoutesFrom(__DIR__ . '/../routes/webhooks.php');
+        $this->loadRoutesFrom(__DIR__ . '/../routes/documents.php');
+        $this->loadViewsFrom(__DIR__ . '/../resources/views', 'payments');
 
         $this->publishes([__DIR__ . '/../config/payments.php' => config_path('payments.php')], 'payments-config');
+        $this->publishes([__DIR__ . '/../resources/views' => resource_path('views/vendor/payments')], 'payments-views');
     }
 }
