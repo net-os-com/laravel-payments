@@ -8,7 +8,7 @@ The package gives drivers, tables and a webhook pipeline. Everything about *what
 
 | # | What | Required | Net OS example |
 | --- | --- | --- | --- |
-| 1 | Install, config, central + tenant migrations | yes | required from GitHub (`vcs` repository, `^0.1.0`), `config/payments.php` (published), tenant path in `config/tenancy.php` |
+| 1 | Install, config, central + tenant migrations | yes | required from Packagist (`^0.1.0`), `config/payments.php` (published), tenant path in `config/tenancy.php` |
 | 2 | Queue worker for `payments.queue` | yes | `payments` case in the app's queue enum, run by Horizon's default supervisor (the mail listener queues on it too) |
 | 3 | `ResolvesPaymentContext` binding | yes | `App\Services\Payments\TenantPaymentContextResolver` |
 | 4 | `ProvidesIssuer` binding | for local invoicing | `App\Services\Payments\TenantIssuerProvider`, reading the tenant's billing profile |
@@ -29,11 +29,10 @@ The package gives drivers, tables and a webhook pipeline. Everything about *what
 
 ## 1. Configuration
 
-Net OS requires the package from GitHub:
+Net OS requires the package from Packagist:
 
 ```json
-"require": { "net-os/laravel-payments": "^0.1.0" },
-"repositories": [{ "type": "vcs", "url": "https://github.com/net-os-com/laravel-payments" }]
+"require": { "net-os/laravel-payments": "^0.1.0" }
 ```
 
 It publishes the config and sets:

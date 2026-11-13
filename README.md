@@ -57,21 +57,11 @@ Multi-tenancy is optional. The package was built for [`stancl/tenancy`](https://
 
 ### 1. Require the package
 
-The package is developed on GitHub. If it is not available from Packagist for your setup, add the repository first:
-
-```json
-{
-    "repositories": [
-        { "type": "vcs", "url": "https://github.com/net-os-com/laravel-payments" }
-    ]
-}
-```
+The package is on [Packagist](https://packagist.org/packages/net-os/laravel-payments):
 
 ```bash
-composer require net-os/laravel-payments:@dev
+composer require net-os/laravel-payments
 ```
-
-The reference host app uses a Composer `path` repository with `"symlink": true` during development.
 
 ### 2. Service provider and facade
 
