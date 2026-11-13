@@ -37,7 +37,7 @@ final readonly class PaymentContext
 | `withSources(CapabilitySourcesData $sources)` | `self` | Same account, issuer and URL parameters, other sources. |
 | `withDiscountSource(CapabilitySource $source)` | `self` | Only the discount source changed. Used to manage or redeem a code created under a source the merchant no longer uses. |
 | `withInvoicingSource(CapabilitySource $source)` | `self` | Only the invoicing source changed. Used to read or credit an invoice created under an earlier source. |
-| `requireAccount()` | `string` | The account id, or throws `AccountNotConnectedException` ("No payment account is connected."). Every Stripe driver method that calls Stripe on a connected account uses it. |
+| `requireAccount()` | `string` | The account id, or throws `AccountNotConnectedException` ("No payment account is connected."). Stripe driver methods that work on the context's connected account use it; `StripeDiscountCodeDriver::setActive()` and `redeem()` use the code's own `provider_account_id` first and only fall back to it. |
 
 The `with*` methods do not call `assertAllowed()`; a context with an otherwise invalid combination can be built on purpose to reach an older record.
 

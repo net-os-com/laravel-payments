@@ -10,7 +10,7 @@ return [
         'tenant' => env('PAYMENTS_TENANT_CONNECTION'),
     ],
 
-    // | The queue that processes inbound webhook events.
+    // | The queue of the webhook job and the PDF job of local invoices and credit notes.
     'queue' => env('PAYMENTS_QUEUE', 'payments'),
 
     // | The webhook route is registered as {prefix}/{provider}.

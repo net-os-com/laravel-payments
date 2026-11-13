@@ -50,11 +50,11 @@ return [
 | Key | Env var | Default | Read by | Notes |
 | --- | --- | --- | --- | --- |
 | `connections.central` | `PAYMENTS_CENTRAL_CONNECTION` | `null` | `PaymentAccount`, `PaymentWebhookEvent`, central migrations | `null` falls back to the model's default connection. In a stancl/tenancy app set it to the central connection name, otherwise the models follow the tenant connection while tenancy is initialized. |
-| `connections.tenant` | `PAYMENTS_TENANT_CONNECTION` | `null` | `PaymentDiscountCode`, `PaymentTaxRate`, `PaymentInvoice` (`UsesTenantConnection`), tenant migrations (`getConnection()`), `LocalInvoiceDriver` transaction | `null` means the default connection, which stancl/tenancy switches to the tenant database. |
+| `connections.tenant` | `PAYMENTS_TENANT_CONNECTION` | `null` | `PaymentDiscountCode`, `PaymentTaxRate`, `PaymentInvoice`, `PaymentDocumentSequence` (`UsesTenantConnection`), tenant migrations (`getConnection()`), `LocalInvoiceDriver` transaction | `null` means the default connection, which stancl/tenancy switches to the tenant database. |
 | `queue` | `PAYMENTS_QUEUE` | `payments` | `ProcessWebhookEventJob` and `RenderInvoicePdfJob` constructors (`onQueue`) | A worker must listen to this queue. |
 | `webhook_path` | none | `payments/webhooks` | `routes/webhooks.php` | Route: `POST {webhook_path}/{provider}`, name `payments.webhooks`. Not an env var; publish the config to change it. |
 | `routes.documents_prefix` | none | `payments/documents` | `routes/documents.php` | Signed routes of local documents: `GET {prefix}/{document}` (`payments.documents.show`) and `GET {prefix}/{document}/pdf` (`payments.documents.pdf`). See [Invoices](Invoices.md#hosted-page-and-pdf). |
-| `routes.documents_middleware` | none | `[]` | `routes/documents.php` | Middleware added after `signed`, e.g. the middleware that initializes tenancy from a URL parameter. |
+| `routes.documents_middleware` | none | `[]` | `routes/documents.php` | Middleware added after `signed:relative` (links are signed on path and query only, so they survive proxies that change the scheme or host), e.g. the middleware that initializes tenancy from a URL parameter. |
 | `stripe.secret` | `STRIPE_SECRET` | `null` | `StripeClient` singleton | Platform account secret key. `StripeAccountDriver::dashboardUrl()` checks whether it starts with `sk_test_` or `rk_test_`. |
 | `stripe.webhook_secrets.snapshot` | `STRIPE_WEBHOOK_SECRET` | `null` | `StripeWebhookDriver` | Verifies non-thin events. |
 | `stripe.webhook_secrets.thin` | `STRIPE_THIN_WEBHOOK_SECRET` | `null` | `StripeWebhookDriver` | Verifies events whose JSON has `"object": "v2.core.event"`. |

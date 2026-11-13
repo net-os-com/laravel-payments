@@ -189,3 +189,5 @@ The webhook and the success page can arrive in any order and both should run the
 ## Expiry and holds
 
 The package checks that `expiresAt` is within Stripe's window (30 minutes to 24 hours from now) and passes it through. If the app holds stock (a desk, a seat) for an open checkout, it must release it itself when the checkout expires: on `checkout.session.expired` via `PaymentCheckoutUpdated`, and as a fallback when it sees an `OPEN` checkout past its expiry (expire it then). The reference app holds for 31 minutes, Stripe's 30 minute minimum plus a margin.
+
+A local one-time discount code is held the same way: reserve it with `discounts($context)->reserve()` when creating the checkout and `release()` it when the checkout expires. See [Discount Codes](Discount-Codes.md#reserving).

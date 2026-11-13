@@ -2,8 +2,8 @@
 
 `net-os/laravel-payments` is a PSP-agnostic layer for payments, invoices, tax and discount codes in multi-tenant Laravel apps. Stripe Connect is the first provider. Net OS is the reference host app.
 
-> [!WARNING]
-> Proof of concept. Not every capability has both drivers, the tests run against a fake of Stripe's API only, and the API, config and schema may change. Read [Security and Limitations](Security-and-Limitations.md) before using it.
+> [!NOTE]
+> Version 0.x: until 1.0 the API, config and schema may change between minor versions. Not every capability has both drivers, and the tests run against a fake of Stripe's API. Read [Security and Limitations](Security-and-Limitations.md) before going to production.
 
 ## Pages
 

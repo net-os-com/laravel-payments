@@ -6,8 +6,8 @@
 
 Stripe Connect is the first (and currently only) provider. The package is extracted from Net OS, a workplace management platform, which is its reference host app.
 
-> [!WARNING]
-> **Status: proof of concept.** The package was built for a pay-as-you-go spike. It has **no automated tests yet**, not every capability has both drivers (see the [support matrix](#driver-support-matrix)), and the public API, config keys and database schema **may change without notice**. Do not use it in production without reviewing the [known limitations](#known-limitations).
+> [!NOTE]
+> **Version 0.x.** Until 1.0 the public API, config keys and database schema may change between minor versions. Not every capability has both drivers (see the [support matrix](#driver-support-matrix)); review the [known limitations](#known-limitations) before going to production.
 
 ## Contents
 
@@ -23,6 +23,7 @@ Stripe Connect is the first (and currently only) provider. The package is extrac
 - [Driver support matrix](#driver-support-matrix)
 - [Known limitations](#known-limitations)
 - [Documentation (wiki)](#documentation-wiki)
+- [Testing](#testing)
 - [License](#license)
 
 ## Why
@@ -156,11 +157,11 @@ All keys live in `config/payments.php`.
 | Key | Env var | Default | Purpose |
 | --- | --- | --- | --- |
 | `connections.central` | `PAYMENTS_CENTRAL_CONNECTION` | `null` | Connection of `PaymentAccount` and `PaymentWebhookEvent` and of the central migrations. `null` means the default connection. |
-| `connections.tenant` | `PAYMENTS_TENANT_CONNECTION` | `null` | Connection of `PaymentDiscountCode`, `PaymentTaxRate` and `PaymentInvoice` and of the tenant migrations. `null` means the default connection, which with stancl/tenancy is the current tenant's database. |
+| `connections.tenant` | `PAYMENTS_TENANT_CONNECTION` | `null` | Connection of `PaymentDiscountCode`, `PaymentTaxRate`, `PaymentInvoice` and `PaymentDocumentSequence` and of the tenant migrations. `null` means the default connection, which with stancl/tenancy is the current tenant's database. |
 | `queue` | `PAYMENTS_QUEUE` | `payments` | Queue of `ProcessWebhookEventJob` and `RenderInvoicePdfJob`. |
 | `webhook_path` | (none) | `payments/webhooks` | Prefix of the webhook route; the route is `POST {webhook_path}/{provider}`. |
 | `routes.documents_prefix` | (none) | `payments/documents` | Prefix of the signed document routes `GET {prefix}/{document}` (`payments.documents.show`) and `GET {prefix}/{document}/pdf` (`payments.documents.pdf`). |
-| `routes.documents_middleware` | (none) | `[]` | Middleware added after `signed` on the document routes, e.g. the tenancy middleware. |
+| `routes.documents_middleware` | (none) | `[]` | Middleware added after `signed:relative` on the document routes, e.g. the tenancy middleware. |
 | `stripe.secret` | `STRIPE_SECRET` | `null` | Secret key of the Stripe **platform** account. |
 | `stripe.webhook_secrets.snapshot` | `STRIPE_WEBHOOK_SECRET` | `null` | Signing secret of the event destination for snapshot (v1) events of connected accounts. |
 | `stripe.webhook_secrets.thin` | `STRIPE_THIN_WEBHOOK_SECRET` | `null` | Signing secret of the event destination for thin (v2) events. |
@@ -559,7 +560,7 @@ Only `Provider::STRIPE` exists. See [Extending](docs/Extending.md) to add a prov
 
 A short list; see [Security notes and known limitations](docs/Security-and-Limitations.md) for all of them with file references.
 
-- Proof of concept: the API may change. The tests use a fake of Stripe's API, not Stripe itself.
+- Before 1.0 the API may change between minor versions. The tests use a fake of Stripe's API, not Stripe itself.
 - Only Stripe. Accounts, checkouts and refunds have no local driver.
 - The package sends no invoice or credit note mail; the app listens to `PaymentInvoiceIssued`.
 - Local document links are signed without expiry. PDFs are rendered by the spatie/laravel-pdf driver you configure (with Cloudflare, the document HTML including the payer's personal data goes to Cloudflare) and stored on `payments.local.invoice_disk` under a path with a random suffix.
@@ -590,10 +591,6 @@ The `docs/` directory holds the full documentation, written to be copied to the 
 - [Testing](docs/Testing.md)
 - [Glossary](docs/Glossary.md)
 
-## License
-
-MIT. See [LICENSE](LICENSE).
-
 ## Testing
 
 The test suite uses Pest and Orchestra Testbench with an in-memory SQLite database. Stripe is replaced by a fake HTTP client that records every request (`tests/Support/FakeStripe.php`), so no network or keys are needed.
@@ -604,3 +601,7 @@ composer test
 ```
 
 GitHub Actions runs the suite on pushes and pull requests that change code (PHP 8.4 and 8.5, Laravel 12). See [Testing](docs/Testing.md).
+
+## License
+
+MIT. See [LICENSE](LICENSE).

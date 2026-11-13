@@ -171,8 +171,8 @@ $invoice = Payments::invoices($context)->issue($context, new IssueInvoiceData(
 
 `NetOS\Payments\Support\DocumentNumberer::next($series, $issuedAt)` hands out the next number of a series per year from `payment_document_sequences`:
 
-1. `firstOrCreate` the row for `series` and the year of `$issuedAt`.
-2. Locks it with `lockForUpdate()` and increments `last_number`.
+1. Creates the row for `series` and the year of `$issuedAt` when it does not exist yet, with `insertOrIgnore`, so two first documents of a year can race without a duplicate-key error. A new row starts at the highest number already in `payment_invoices` for that `{series}-{year}-` prefix, so documents issued before the sequence table existed are never numbered again.
+2. Reads the row again with `lockForUpdate()` and increments `last_number`.
 3. Formats `{series}-{year}-{number}`, the number padded to 4 digits and longer when needed (`INV-2026-9999` is followed by `INV-2026-10000`).
 
 Invoices use the series `payments.local.invoice_number_prefix` (default `INV`), credit notes `payments.local.credit_note_number_prefix` (default `CN`). The driver calls it inside its transaction on the tenant connection, so a rolled back document frees its number and numbering stays gapless.
@@ -205,7 +205,7 @@ The invoice itself is never edited beyond `credited_amount`, `credited_at` and `
 
 ### Hosted page and PDF
 
-`NetOS\Payments\Support\LocalDocumentPresenter::present($document, $urlParameters)` turns a `PaymentInvoice` into `InvoiceData` with signed links **without expiry**, like a provider's hosted invoice link:
+`NetOS\Payments\Support\LocalDocumentPresenter::present($document, $urlParameters)` turns a `PaymentInvoice` into `InvoiceData` with signed links **without expiry**, like a provider's hosted invoice link. The links are signed **relative** (`URL::signedRoute(..., absolute: false)`): only the path and query are signed, so they keep working behind proxies that change the scheme or host.
 
 | Link | Route name | Path | Present |
 | --- | --- | --- | --- |
@@ -214,7 +214,7 @@ The invoice itself is never edited beyond `credited_amount`, `credited_at` and `
 
 The parameters are `document` (the row id) plus `PaymentContext::$urlParameters`, so a host app can add e.g. the tenant id and read it in a middleware from `payments.routes.documents_middleware`. See [Payment Context](Payment-Context.md).
 
-The routes (`routes/documents.php`) use the `signed` middleware followed by `payments.routes.documents_middleware`, and are served by `NetOS\Payments\Http\Controllers\DocumentController`:
+The routes (`routes/documents.php`) use the `signed:relative` middleware followed by `payments.routes.documents_middleware` (default `[]`) under `payments.routes.documents_prefix` (default `payments/documents`), and are served by `NetOS\Payments\Http\Controllers\DocumentController`:
 
 | Action | Behavior |
 | --- | --- |

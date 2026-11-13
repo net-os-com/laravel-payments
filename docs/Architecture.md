@@ -19,6 +19,7 @@
 | Actions | `NetOS\Payments\Actions\SyncPaymentAccountAction` | Copies the provider's account state to `payment_accounts`. |
 | Events | `NetOS\Payments\Events\*` | `PaymentCheckoutUpdated`, `PaymentAccountUpdated`, `PaymentInvoiceIssued` for the host app. |
 | Exceptions | `NetOS\Payments\Exceptions\*` | `AccountNotConnectedException`, `HandledByCheckoutException`. |
+| Console | `NetOS\Payments\Console\RetryWebhookEventsCommand` | `payments:retry-webhooks`, requeues failed or unprocessed webhook events. |
 
 ## The entry point
 
@@ -57,7 +58,7 @@ Because they extend `Illuminate\Support\Manager`:
 - drivers must therefore be stateless across merchants, which is why everything merchant-specific comes in through `PaymentContext`;
 - custom drivers can be added with `extend()` (see [Extending](Extending.md)).
 
-`StripeClient` is a container singleton built once from `payments.stripe.secret`. All Stripe calls on connected accounts pass `['stripe_account' => $accountId]` per request, so one client serves all merchants.
+`StripeClient` is a container singleton built once from `payments.stripe.secret`. Checkout, refund, invoice, discount code and tax rate calls on connected accounts pass `['stripe_account' => $accountId]` per request, so one client serves all merchants. Accounts v2 calls are made as the platform with the account id as an argument (`accounts->retrieve`, `accounts->update`, `accountLinks->create(['account' => ...])`), and the logo upload for branding is a platform-owned file.
 
 ## How a driver is picked
 
@@ -115,8 +116,8 @@ sequenceDiagram
 
     App->>Pkg: discounts(ctx)->validate(ctx, code, reference)
     App->>Pkg: tax(ctx)->calculate(ctx, lines) (local tax only)
-    App->>Pkg: checkouts(ctx)->create(ctx, CreateCheckoutData)
     App->>Pkg: discounts(ctx)->reserve(ctx, code, reference, expiresAt)
+    App->>Pkg: checkouts(ctx)->create(ctx, CreateCheckoutData)
     Pkg->>Stripe: checkout.sessions.create (stripe_account)
     Stripe-->>Pkg: Session
     Pkg-->>App: ProviderCheckoutData (url)
@@ -124,8 +125,8 @@ sequenceDiagram
     Customer->>Stripe: pays
     Stripe->>WH: checkout.session.completed (snapshot)
     WH->>WH: verify, store payment_webhook_events
-    WH-->>Stripe: 204
     WH->>Job: dispatch (payments queue)
+    WH-->>Stripe: 204
     Job->>App: PaymentCheckoutUpdated
     App->>Pkg: checkouts(ctx)->fetch(ctx, id)
     App->>Pkg: discounts(ctx)->redeem(ctx, code) (ends the hold)

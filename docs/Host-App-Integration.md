@@ -8,10 +8,10 @@ The package gives drivers, tables and a webhook pipeline. Everything about *what
 
 | # | What | Required | Net OS example |
 | --- | --- | --- | --- |
-| 1 | Install, config, central + tenant migrations | yes | `config/payments.php` (published), tenant path in `config/tenancy.php` |
-| 2 | Queue worker for `payments.queue` | yes | `payments` case in the app's queue enum, run by Horizon |
+| 1 | Install, config, central + tenant migrations | yes | required from GitHub (`vcs` repository, `^0.1.0`), `config/payments.php` (published), tenant path in `config/tenancy.php` |
+| 2 | Queue worker for `payments.queue` | yes | `payments` case in the app's queue enum, run by Horizon's default supervisor (the mail listener queues on it too) |
 | 3 | `ResolvesPaymentContext` binding | yes | `App\Services\Payments\TenantPaymentContextResolver` |
-| 4 | `ProvidesIssuer` binding | for local invoicing | `App\Services\Payments\TenantIssuerProvider` |
+| 4 | `ProvidesIssuer` binding | for local invoicing | `App\Services\Payments\TenantIssuerProvider`, reading the tenant's billing profile |
 | 5 | Storage of the merchant's sources + settings screen | yes, unless fixed | `tenants.payment_settings` (tenant data), `GetPaymentSourcesAction`, `UpdatePaymentSourcesAction` |
 | 6 | Connect / disconnect / onboarding refresh flow | yes | `ConnectPaymentAccountAction`, `DisconnectPaymentAccountAction`, `CreatePaymentOnboardingUrlAction`, signed refresh route |
 | 7 | The app's own payment record | yes | `payments` + `payment_line_items` tenant tables |
@@ -20,7 +20,7 @@ The package gives drivers, tables and a webhook pipeline. Everything about *what
 | 10 | Listener for `PaymentCheckoutUpdated` | yes | `SyncGuestPaymentOnCheckoutUpdated` |
 | 11 | Invoices per source | yes | `IssueLocalInvoiceAction`, `SyncPaymentInvoiceAction` |
 | 11a | Document routes in the right context, PDF renderer and disk | for local invoicing | `routes.documents_middleware`, `PaymentContext::$urlParameters`, `local.invoice_disk` |
-| 11b | Listener for `PaymentInvoiceIssued` that mails the document | for local invoicing and credit notes | |
+| 11b | Listener for `PaymentInvoiceIssued` that mails the document | for local invoicing and credit notes | `SendGuestDocumentMailOnInvoiceIssued` (`GuestDocumentMail`), `UpdatePaymentInvoiceOnInvoiceIssued` |
 | 12 | Refunds | optional | `RefundPaymentAction` |
 | 13 | Discount code admin + validation | optional | `CreateDiscountCodeAction`, `SetDiscountCodeActiveAction`, `DiscountCodeController` |
 | 14 | Local tax rates | for local tax | a tenant migration inserting `NL / workspace_rental / 21` |
@@ -29,7 +29,14 @@ The package gives drivers, tables and a webhook pipeline. Everything about *what
 
 ## 1. Configuration
 
-Net OS publishes the config and sets:
+Net OS requires the package from GitHub:
+
+```json
+"require": { "net-os/laravel-payments": "^0.1.0" },
+"repositories": [{ "type": "vcs", "url": "https://github.com/net-os-com/laravel-payments" }]
+```
+
+It publishes the config and sets:
 
 ```php
 'connections' => [
@@ -121,12 +128,24 @@ class TenantIssuerProvider implements ProvidesIssuer
 {
     public function issuer(): IssuerData
     {
-        return new IssuerData(name: (string) tenant()->name);
+        $tenant = tenant();
+        $profile = GetBillingProfileAction::make()->handle($tenant);
+
+        if ($profile === null) {
+            return new IssuerData(name: (string) $tenant->name);
+        }
+
+        return new IssuerData(
+            name: $profile->legalName,
+            address: implode("\n", [$profile->street, $profile->postalCode . ' ' . $profile->city, $profile->country]),
+            chamberOfCommerceNumber: $profile->chamberOfCommerceNumber,
+            vatNumber: $profile->vatNumber,
+        );
     }
 }
 ```
 
-In the spike only the operator's name is known; address, Chamber of Commerce number and VAT number are left `null`. A production implementation must fill them for legally valid invoices.
+The operator enters the billing profile (legal name, address, Chamber of Commerce number, VAT number) in the payment settings (`GET`/`PUT /payments/billing-profile`, stored in `tenants.billing_profile`). `IssueLocalInvoiceAction` refuses to issue a local invoice without it (`Complete the billing profile before issuing local invoices.`). Saving the profile issues the invoices that were missed in the meantime (`IssueMissingLocalInvoicesAction`, which fetches the guest's billing details from the checkout again).
 
 ### Context for an existing payment
 
@@ -168,7 +187,7 @@ class GetPaymentSourcesAction
 
 The default (Stripe invoices, local VAT, Stripe codes) is valid but is not one of the `PaymentProfile` presets. `UpdatePaymentSourcesAction` turns `CapabilitySourcesData::problem()` into a `ValidationException` on `invoicing`. A change applies to new bookings and codes; existing codes keep their `source`, existing payments keep their `invoice_source`.
 
-API: `GET /payments/settings`, `PUT /payments/settings`.
+API: `GET /payments/settings`, `PUT /payments/settings`; the billing profile at `GET /payments/billing-profile`, `PUT /payments/billing-profile`.
 
 ## 4. Connecting the operator's Stripe account
 
@@ -184,7 +203,7 @@ sequenceDiagram
     alt current account exists
         API->>API: use it
     else a deactivated account exists
-        API->>API: clear deactivated_at, SyncPaymentAccountAction
+        API->>API: clear deactivated_at, set connected_by, SyncPaymentAccountAction
     else none
         API->>Pkg: accounts(ctx)->create(ctx, CreateAccountData + defaults)
         Pkg->>Stripe: create v2 account
@@ -195,7 +214,7 @@ sequenceDiagram
     API->>Pkg: onboardingUrl(ctx, returnUrl, signed refreshUrl)
     API-->>Admin: { url }
     Admin->>Stripe: onboarding
-    Stripe-->>Admin: return to /settings/payment_integration
+    Stripe-->>Admin: return to /settings/operator
     Admin->>API: GET /payments/account
     API->>API: resync when synced_at is null or older than 30 s
 ```
@@ -204,9 +223,10 @@ Details from the reference implementation:
 
 - **Defaults** (`BuildPaymentAccountDefaultsAction`): statement descriptor derived from the operator's name (ASCII, upper case, `A-Z0-9` and spaces, 5 to 22 characters, padded with ` DESKS` when too short), the connecting admin's email as support email, the support URL and locales from config, brand colors from the tenant's theme (only valid `#RRGGBB`), and the tenant's logo copied to a temporary file when it is PNG or JPEG.
 - **Logo after create** (`ApplyPaymentAccountDefaultsAction`): calls `updateBranding()` and `updateLocales()`, then deletes the temporary logo file. Wrapped in `rescue(..., report: true)` on connect, so a logo Stripe refuses does not block connecting.
-- **Refresh URL**: `URL::temporarySignedRoute('payments.account.onboarding.refresh', now()->addDay(), ['tenant' => $ownerId])`. The route is behind the `signed` middleware; its controller mints a new link and redirects to it.
-- **Disconnect** (`DELETE /payments/account`): sets `status = deactivated` and `deactivated_at`. The Stripe account stays with the operator and is reused on reconnect.
-- **Configuration check** (`GET /payments/account/configuration`): `CheckPaymentAccountConfigurationAction` compares `configuration()` with the defaults (colors, logo, locales, descriptor, support email and phone) and reports each as OK, missing, different or manual, with whether the app can fix it. `PUT /payments/account/configuration` re-applies what stays writable (branding and locales).
+- **Refresh URL**: `URL::temporarySignedRoute('payments.account.onboarding.refresh', now()->addDay(), ['tenant' => $ownerId])`. The route is behind the `signed` middleware. Because it sits in the public API group, tenancy can also come from an `X-Tenant` header, so the controller refuses (403) when the active tenant differs from the signed `tenant` parameter, then mints a new link and redirects to it.
+- **Disconnect** (`DELETE /payments/account`): sets `status = deactivated` and `deactivated_at`. The Stripe account stays with the operator and is reused on reconnect. While disconnected, invoices, stats, resend and refunds return nothing or 404: they only cover payments of the connected account (`Payment::scopeOfConnectedAccount()`).
+- **Sync status and manual sync**: `GET /payments/account` returns `sync` (`lastSyncedAt`: the last processed webhook or manual sync, `invoiceCount`, `isReceivingLiveUpdates`: a processed webhook in the last 24 hours) from `GetPaymentAccountSyncStatusAction`. `POST /payments/account/sync` (`SyncPaymentAccountNowAction`) re-syncs the account, re-reads the invoices of paid and refunded payments, and backfills `customer_details` from the checkout for older payments.
+- **Configuration check** (`GET /payments/account/configuration`): `CheckPaymentAccountConfigurationAction` compares `configuration()` with the defaults (colors, logo, locales, descriptor) and checks that support email and phone are present; it also reports receipt emails, customer emails (manual: a Stripe dashboard setting) and the billing profile. Each check is OK, missing, different or manual, with whether the app can fix it. `PUT /payments/account/configuration` re-applies what stays writable (branding and locales); a Stripe error becomes a validation error on `configuration`.
 
 ## 5. The app's payment record
 
@@ -222,6 +242,7 @@ The package does not store checkouts. Net OS has a tenant `payments` table with,
 | `provider`, `provider_account_id` | the context at booking time |
 | `provider_checkout_id`, `checkout_url` | `ProviderCheckoutData` |
 | `provider_payment_id`, `provider_invoice_id` | `ProviderCheckoutData` when paid; for local invoices `InvoiceData::$reference` |
+| `customer_details` | `ProviderCheckoutData::$customer` when paid (cast to `CustomerDetailsData`); shown as "Billed to" |
 | `invoice_number`, `invoice_status`, `invoice_url`, `invoice_pdf_url` | `InvoiceData` |
 | `provider_refund_id`, `refunded_amount`, `refunded_at`, `refunded_by` | `ProviderRefundData` |
 | `expires_at`, `paid_at` | app |
@@ -293,8 +314,8 @@ The desk is held before payment so nobody else can take it, and released when th
 2. `fetch()` the checkout with `ResolvePaymentContextAction`'s context.
 3. If still `OPEN` but past `expires_at`, `expire()` it (covers a lost `expired` webhook).
 4. `EXPIRED`: release the desk.
-5. `PAID`: in a transaction, `lockForUpdate()` the payment, re-check `pending`, store amounts and provider ids, and `redeem()` the discount code with `$context->withDiscountSource($code->source)`.
-6. Then invoice: local invoicing without an invoice yet → `IssueLocalInvoiceAction`; otherwise `SyncPaymentInvoiceAction` (reads the Stripe invoice; re-runs until it has a number and PDF).
+5. `PAID`: in a transaction, `lockForUpdate()` the payment, re-check `pending`, store amounts, provider ids and `customer_details`, and `redeem()` the discount code with `$context->withDiscountSource($code->source)`.
+6. Then invoice: local invoicing without an invoice yet → `IssueLocalInvoiceAction`, wrapped in `rescue()` so the payment stays paid when the invoice cannot be issued yet (e.g. no billing profile); otherwise `SyncPaymentInvoiceAction`.
 
 `DELETE /guest/payments/{uuid}` (the cancel page) syncs first, then expires an open checkout and releases the desk, or keeps the payment if it turned out to be paid.
 
@@ -327,10 +348,14 @@ class SyncGuestPaymentOnCheckoutUpdated
 
 Registered through Laravel's listener discovery (`withEvents(discover: [app/Listeners/*])`). Net OS has no listener for `PaymentAccountUpdated`.
 
+Two listeners handle `PaymentInvoiceIssued`: `SendGuestDocumentMailOnInvoiceIssued` (queued on `payments`, 3 tries, backoff 30 and 120 seconds) mails `GuestDocumentMail` with the PDF attached when it is stored, and `UpdatePaymentInvoiceOnInvoiceIssued` writes number, status and URLs to the payment once a local invoice's PDF is rendered (credit notes are skipped).
+
 ## 10. Invoices
 
-- **Local** (`IssueLocalInvoiceAction`): re-prices the stored line items with `PriceLineItemsAction`, maps them to `TaxedLineData`, calls `issue()` with `reference = payment uuid`, and stores `InvoiceData::$reference` in `provider_invoice_id` plus number and status.
-- **Stripe** (`SyncPaymentInvoiceAction`): calls `find()` with the Stripe invoice id until `invoice_number` and `invoice_pdf_url` are set (or always, with `force`).
+- **Local** (`IssueLocalInvoiceAction`): re-prices the stored line items with `PriceLineItemsAction`, maps them to `TaxedLineData`, calls `issue()` with `reference = payment uuid`, and stores `InvoiceData::$reference` in `provider_invoice_id` plus number, status, `invoice_url` and `invoice_pdf_url`. It locks the payment row and re-checks `provider_invoice_id`, so the webhook and the success page cannot both issue.
+- **Sync** (`SyncPaymentInvoiceAction`, both sources): calls `find()` until the invoice is complete (a number plus a PDF URL, or only a number for a local invoice) or always, with `force`.
+- **List** (`GET /payments/invoices`): paid and refunded payments of the connected account, each synced, with `stats` (today, this month, refunds) and `syncedAt`. `GET /payments/invoices/{uuid}` returns one.
+- **Resend** (`POST /payments/invoices/{uuid}/resend`, `ResendPaymentInvoiceAction`): Stripe cannot resend a paid invoice, so Net OS mails `GuestDocumentMail` itself for both sources, with the local PDF attached.
 
 What the package expects from any host app:
 
@@ -342,20 +367,35 @@ What the package expects from any host app:
 
 `RefundPaymentAction` (`POST /payments/refunds`):
 
-1. Only `paid` payments with a `provider_payment_id`.
-2. `refund()` the whole payment with `ResolvePaymentContextAction`'s context; Stripe errors become validation errors.
-3. Store refund id, amount, time and user; status `refunded`.
-4. Release the desk when the booking has not ended.
-5. When the payment has an invoice (`provider_invoice_id`), for both sources: `creditNote()` with the invoice's source (`withInvoicingSource()`), the refunded amount and `$refund->providerRefundId`, so a Stripe credit note is linked to the refund instead of refunding again. The payer receives the credit note by mail through `PaymentInvoiceIssued`; the payment keeps pointing at the invoice itself.
-6. Re-sync the invoice fields (`force: true`); the invoice status becomes `partially_credited` or `credited` for both sources.
+1. Only `paid` payments with a `provider_payment_id`, of the connected account (`RefundController`).
+2. An optional `amount` (default: what is left); it must be between 1 cent and what is left. Partial refunds add up.
+3. `refund()` with `ResolvePaymentContextAction`'s context (which carries the payment's invoicing source); Stripe errors become validation errors.
+4. Store refund id, the summed `refunded_amount`, time and user; status becomes `refunded` only once nothing is left, until then it stays `paid`.
+5. Release the desk when the payment is fully refunded and the booking has not ended.
+6. When the payment has an invoice (`provider_invoice_id`), for both sources: `creditNote()` with the refunded amount and `$refund->providerRefundId`, so a Stripe credit note is linked to the refund instead of refunding again. It is wrapped in `rescue()`: the money is already back with the guest, so a failing credit note is reported instead of failing the refund. The payer receives the credit note by mail through `PaymentInvoiceIssued`; the payment keeps pointing at the invoice itself.
+7. Re-sync the invoice fields (`force: true`); the invoice status becomes `partially_credited` or `credited` for both sources.
 
 ## 12. Discount codes
 
 - `GET /payments/discount-codes` → `Payments::discounts($ctx)->list($ctx)` (the codes of the context's discount source, and for Stripe of the current account).
-- `POST /payments/discount-codes` → `CreateDiscountCodeAction`: validates code format (`[A-Za-z0-9-]`, max 30), uniqueness in `payment_discount_codes.code`, percentage 1–100, `validFrom >= today`, `validUntil >= validFrom`; creates in the tenant's current discount source; `AccountNotConnectedException` and Stripe errors become validation errors; passes `metadata: ['tenant_id' => ...]`.
+- `POST /payments/discount-codes` → `CreateDiscountCodeData` validates code format (`[A-Za-z0-9-]`, max 30), uniqueness in `payment_discount_codes.code`, percentage 1–100, `validFrom >= today` and `validUntil >= validFrom`; `CreateDiscountCodeAction` creates the code in the tenant's current discount source; `AccountNotConnectedException` and Stripe errors become validation errors; passes `metadata: ['tenant_id' => ...]`.
 - `PUT /payments/discount-codes/{id}` → `UpdateDiscountCodeAction`: toggles active through `setActive()` with the code's own source, then updates name and description locally.
 
-## 13. Tax rates
+## 13. Guest rates
+
+Guests pay per hour by time block and weekday, with periods that raise or lower all rates. The operator manages them at `payments/guest-rates/*` (standard price, time blocks, the rate grid and periods); `PriceLineItemsAction` turns a booking into one line item per block.
+
+## 14. Operator screens
+
+The Net OS UI (Expo, web) has:
+
+- **Settings › Settings** (`/settings/operator`): tabs Payments (the Stripe connection, sync, disconnect, Stripe configuration, who handles what and the billing profile) and Opening hours.
+- **Settings › Guest rates** (`/settings/guest_rates`): standard price, the editable rate grid and periods.
+- **Billing** (`/billing`, a top-level item): tabs Invoices (stats, filters, the invoice table and a detail panel with billing details, resend and refund) and Discount codes.
+
+API clients live in `ui/api/payments` and `ui/api/guest`.
+
+## 15. Tax rates
 
 A tenant migration inserts the Dutch rate for every tenant:
 
@@ -366,6 +406,6 @@ DB::table('payment_tax_rates')->insert([
 ]);
 ```
 
-## 14. Authorization
+## 16. Authorization
 
-All admin endpoints sit behind the app's authentication and a pay-as-you-go permission check (`AuthorizesPayAsYouGo`). The package itself has no authorization: anyone who can call the facade can move money on the context's account. Guest endpoints identify the payment by an unguessable UUID.
+All admin endpoints sit behind the app's authentication and `AuthorizesPayAsYouGo`: the Pennant feature `PayAsYouGo` must be active for the tenant (404 otherwise) and the user must be allowed to update the tenant. Guest endpoints require the same feature (`RequiresPayAsYouGo`). The onboarding refresh route uses neither; it relies on its signature and the tenant check. The package itself has no authorization: anyone who can call the facade can move money on the context's account. Guest endpoints identify the payment by an unguessable UUID.

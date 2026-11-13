@@ -11,7 +11,7 @@
 | Database | In-memory SQLite (the `testing` connection). `tests/Pest.php` applies `RefreshDatabase` to both suites, and `TestCase` loads both `database/migrations` and `database/migrations/tenant`, so the central and tenant tables live in one database. |
 | Config | A fixed `app.key`, `payments.stripe.secret = sk_test_package`, snapshot and thin webhook secrets (`whsec_snapshot`, `whsec_thin`), and a `local` disk under the system temp directory for PDFs. |
 | Stripe | `tests/Support/FakeStripe.php`, see below. No network access or Stripe keys are needed. |
-| Contexts | `TestCase` helpers build a `PaymentContext` for account `acct_test` with an issuer and `urlParameters = ['tenant' => 'acme']`: `context()`, `localContext()` (locally managed), `stripeContext()` (Stripe managed) and `withLocalDiscounts()`. |
+| Contexts | `TestCase` helpers build a `PaymentContext` for account `acct_test` with an issuer and `urlParameters = ['tenant' => 'acme']`: `context($profile = LOCALLY_MANAGED, $account = 'acct_test')`, `localContext()` (locally managed) and `stripeContext()` (Stripe managed). `withLocalDiscounts($context)` switches only the discount source of a given context. |
 
 ### FakeStripe
 
@@ -49,7 +49,7 @@ composer test
 | --- | --- |
 | `tests/Unit/DocumentNumbererTest.php` | Gapless numbering per series and year, numbers past 9999, seeding a sequence from documents numbered before it existed, and `LIKE` wildcards in a series. |
 | `tests/Unit/LocalDiscountCodeDriverTest.php` | Upper-case storage and case-insensitive lookup, validation reasons, reserving and releasing one-time codes, expiry of holds, redemption, and filtering by the active source. |
-| `tests/Unit/LocalInvoiceDriverTest.php` | Issuing a numbered invoice, refusing without an issuer, partial and full credit notes, VAT cancelled to the cent on a full credit, and partial credits split over VAT rates without negative lines. |
+| `tests/Unit/LocalInvoiceDriverTest.php` | Issuing a numbered invoice, refusing without an issuer, partial and full credit notes, refusing a credit of zero or less, VAT cancelled to the cent on a full credit, partial credits split over VAT rates without negative lines, and crediting what is left per rate after earlier credits. |
 | `tests/Unit/LocalTaxDriverTest.php` | Inclusive VAT per line from the rate table, refusing a category without a rate, and picking the newest rate valid today. |
 | `tests/Unit/PaymentContextTest.php` | `with...()` helpers keep the issuer and URL parameters, `requireAccount()`, the allowed source combinations and every `PaymentProfile`. |
 

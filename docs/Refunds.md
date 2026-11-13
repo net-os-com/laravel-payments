@@ -70,7 +70,7 @@ sequenceDiagram
     Pkg-->>App: ProviderRefundData
     App->>App: store refund id, amount, status
     alt invoice source local
-        App->>Pkg: invoices(ctx)->creditNote(ctx, reference, amount, refundId)
+        App->>Pkg: invoices(ctx)->creditNote(ctx, reference, amount)
         Pkg->>DB: insert credit note (CN series), update invoice credited_amount + status
         Pkg-)Q: dispatch after commit
         Q-->>App: PaymentInvoiceIssued (after the PDF is stored)

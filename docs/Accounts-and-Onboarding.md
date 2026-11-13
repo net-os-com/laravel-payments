@@ -114,7 +114,7 @@ The driver calls `v2.core.accountLinks.create` with:
 | `account` | `$context->requireAccount()` |
 | `use_case.type` | `account_onboarding` |
 | `use_case.account_onboarding.collection_options.fields` | `eventually_due` (collect everything up front) |
-| `return_url` / `refresh_url` | the arguments |
+| `use_case.account_onboarding.return_url` / `use_case.account_onboarding.refresh_url` | the arguments |
 
 The URL is **single-use** and short-lived.
 

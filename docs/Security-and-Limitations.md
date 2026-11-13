@@ -2,7 +2,7 @@
 
 [Home](Home.md) › Security and Limitations
 
-The package is a proof of concept. This page lists what it does not do and what the host app is responsible for. File references are relative to the repository root.
+Until 1.0 the API may change between minor versions. This page lists what the package does not do and what the host app is responsible for. File references are relative to the repository root.
 
 ## Status
 
@@ -43,7 +43,7 @@ The package is a proof of concept. This page lists what it does not do and what 
 ### Money handling
 
 - All amounts are integers in minor units, tax-inclusive. The package does not validate amounts, currencies or percentages; Stripe rejects some invalid values, the local drivers do not. `StripeCheckoutDriver::create()` does check two things before calling Stripe: `expiresAt` must be 30 minutes to 24 hours ahead, and every line needs a `taxPercentage` when tax is not `stripe` (both throw `InvalidArgumentException`).
-- Checkouts are direct charges on the connected account with `fees_collector` and `losses_collector` set to `stripe`. The platform takes no application fee in this version.
+- Checkouts are direct charges on the connected account. The account itself is created with `fees_collector` and `losses_collector` set to `stripe` (`defaults.responsibilities`). The platform takes no application fee in this version.
 
 ### Document links and tenancy
 
@@ -63,7 +63,7 @@ Document links are signed on path and query only (`signed:relative`), so they su
 | Discounts | Reservations expire only by time: a hold whose checkout ended without `release()` blocks the code until `reserved_until`. |
 | Invoices | `issue()` and `creditNote()` of the local driver return `pdfUrl = null`; the PDF is rendered on the queue. Call `find()` later for the link. |
 | Invoices | The year of a local document number is the year of `now()` in the app's timezone. |
-| Invoices | Stripe credit notes have no `hostedUrl`. `PaymentInvoiceIssued` for a Stripe credit note uses the invoice's `metadata['payment_uuid']` as reference, a key the host app has to set (`src/Drivers/Stripe/StripeInvoiceDriver.php`). |
+| Invoices | Stripe credit notes have no `hostedUrl`. `PaymentInvoiceIssued` for a Stripe credit note uses the invoice's `metadata['payment_uuid']` as reference, a key the host app has to set; without it the reference falls back to the Stripe invoice id (`src/Drivers/Stripe/StripeInvoiceDriver.php`). |
 | Invoices | The document view has fixed English labels and formats amounts with a comma as decimal separator; publish `payments-views` to change it. |
 | Refunds | No refund webhooks; a `pending` refund that later fails is not reported. A refunded one-time code stays used. |
 | Webhooks | No pruning of `payment_webhook_events`. Events that still fail after the job's 5 tries are only retried by `payments:retry-webhooks` or a redelivery. |
