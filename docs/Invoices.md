@@ -196,7 +196,10 @@ $creditNote = Payments::invoices($context)->creditNote($context, $invoice->refer
 
 After the commit it dispatches `RenderInvoicePdfJob` for the credit note and returns the credit note's `InvoiceData` (`type = credit_note`, `creditsReference` = the invoice id).
 
-The credit note's lines: one line per VAT rate of the invoice, described as `Refund for invoice {number}`. The credited amount is split over the rates in proportion to their gross amounts on the invoice (the last rate gets the rounding rest), and each line's `taxAmount` is the inclusive VAT of its amount.
+The credit note's lines: one line per VAT rate of the invoice, described as `Refund for invoice {number}`. The driver first works out what is left per rate: the invoice's gross amount and VAT per rate, minus the lines of earlier credit notes on that invoice. Rates with nothing left are dropped.
+
+- **Full credit** (`$amount` equals what is left): each line mirrors the remaining gross amount and the remaining VAT of its rate exactly, so the invoice's VAT is cancelled to the cent.
+- **Partial credit**: the amount is split over the remaining rates in proportion to their gross amounts, by largest remainder (each share is rounded down and the leftover cents go to the largest remainders), so no line is negative. Each line's `taxAmount` is the inclusive VAT of its amount. Rates whose share is `0` get no line.
 
 The invoice itself is never edited beyond `credited_amount`, `credited_at` and `status`; a refund adds a credit note.
 
@@ -216,7 +219,7 @@ The routes (`routes/documents.php`) use the `signed` middleware followed by `pay
 | Action | Behavior |
 | --- | --- |
 | `show($document)` | Renders the view `payments::invoices.document` for the row, with a signed PDF link (same query parameters) when the PDF exists. |
-| `pdf($document)` | Streams the stored PDF inline as `{number}.pdf` from `pdf_disk`; 404 until the PDF is stored. |
+| `pdf($document)` | Streams the stored PDF inline as `{number}.pdf` from `pdf_disk`; 404 until the PDF is stored, and 404 when the stored file is missing from the disk. |
 
 The view prints: "Invoice" or "Credit note" and the number; the issuer (name, address, Chamber of Commerce number, VAT number); the payer (company name, name, email, address, VAT id) from `payer`, falling back to `payer_name` and `payer_email`; the issue date; for a credit note the number of the credited invoice; the lines with VAT percentage and amount incl. VAT; a discount line when `discount_amount > 0`; the total incl. VAT and the VAT per rate; and the reference. Credit note amounts are shown negative, while the row stores them positive. Publish the view with the `payments-views` tag to change it (see [Configuration](Configuration.md#views)).
 

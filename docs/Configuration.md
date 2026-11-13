@@ -8,12 +8,12 @@
 
 | Phase | What it does |
 | --- | --- |
-| `register()` | `mergeConfigFrom(config/payments.php, 'payments')`; singleton `NetOS\Payments\Payments`; singleton `Stripe\StripeClient` with `['api_key' => config('payments.stripe.secret') ?: null]`. |
-| `boot()` | `loadMigrationsFrom(database/migrations)` (central only); `loadRoutesFrom(routes/webhooks.php)`; `loadRoutesFrom(routes/documents.php)`; `loadViewsFrom(resources/views, 'payments')`; `publishes([config/payments.php => config_path('payments.php')], 'payments-config')`; `publishes([resources/views => resource_path('views/vendor/payments')], 'payments-views')`. |
+| `register()` | `mergeConfigFrom(config/payments.php, 'payments')`; singletons for the seven managers (`AccountManager`, `CheckoutManager`, `RefundManager`, `InvoiceManager`, `TaxManager`, `DiscountCodeManager`, `WebhookManager`); singleton `NetOS\Payments\Payments`; singleton `Stripe\StripeClient` with `['api_key' => config('payments.stripe.secret') ?: null]`. |
+| `boot()` | `loadMigrationsFrom(database/migrations)` (central only); `loadRoutesFrom(routes/webhooks.php)`; `loadRoutesFrom(routes/documents.php)`; `loadViewsFrom(resources/views, 'payments')`; `publishes([config/payments.php => config_path('payments.php')], 'payments-config')`; `publishes([database/migrations => database_path('migrations')], 'payments-migrations')`; in the console, `commands([RetryWebhookEventsCommand::class])`; `publishes([resources/views => resource_path('views/vendor/payments')], 'payments-views')`. |
 
 The facade alias `Payments` points at `NetOS\Payments\Facades\Payments`.
 
-Because `StripeClient` is a container singleton, a test or a host app can replace it with its own binding (for example a client pointed at `stripe-mock`).
+Because `StripeClient` is a container singleton, a test or a host app can replace it with its own binding (for example a client pointed at `stripe-mock`). Because the managers are singletons too, a driver registered with `extend()` on a manager is the one the facade uses (see [Extending](Extending.md)).
 
 ## Config keys
 
@@ -55,7 +55,7 @@ return [
 | `webhook_path` | none | `payments/webhooks` | `routes/webhooks.php` | Route: `POST {webhook_path}/{provider}`, name `payments.webhooks`. Not an env var; publish the config to change it. |
 | `routes.documents_prefix` | none | `payments/documents` | `routes/documents.php` | Signed routes of local documents: `GET {prefix}/{document}` (`payments.documents.show`) and `GET {prefix}/{document}/pdf` (`payments.documents.pdf`). See [Invoices](Invoices.md#hosted-page-and-pdf). |
 | `routes.documents_middleware` | none | `[]` | `routes/documents.php` | Middleware added after `signed`, e.g. the middleware that initializes tenancy from a URL parameter. |
-| `stripe.secret` | `STRIPE_SECRET` | `null` | `StripeClient` singleton | Platform account secret key. `StripeAccountDriver::dashboardUrl()` checks whether it starts with `sk_test_`. |
+| `stripe.secret` | `STRIPE_SECRET` | `null` | `StripeClient` singleton | Platform account secret key. `StripeAccountDriver::dashboardUrl()` checks whether it starts with `sk_test_` or `rk_test_`. |
 | `stripe.webhook_secrets.snapshot` | `STRIPE_WEBHOOK_SECRET` | `null` | `StripeWebhookDriver` | Verifies non-thin events. |
 | `stripe.webhook_secrets.thin` | `STRIPE_THIN_WEBHOOK_SECRET` | `null` | `StripeWebhookDriver` | Verifies events whose JSON has `"object": "v2.core.event"`. |
 | `stripe.country` | `STRIPE_ACCOUNT_COUNTRY` | `nl` | `StripeAccountDriver` (`identity.country`), `StripeTaxRates` (tax rate `country` and `jurisdiction`, upper-cased) | One country for all new accounts. |
@@ -101,6 +101,14 @@ The reference host app sets `central` to `env('DB_CONNECTION', 'mysql')` and `te
 
 `loadMigrationsFrom()` does not descend into subdirectories, so the tenant path must be registered by the app.
 
+Both groups can also be published:
+
+```bash
+php artisan vendor:publish --tag=payments-migrations
+```
+
+This copies `database/migrations`, including the `tenant` subdirectory, to the app's `database/migrations`, so the tenant migrations land in `database/migrations/tenant`. Then register only that app path for tenant migrations instead of the vendor path below.
+
 **stancl/tenancy:**
 
 ```php
@@ -121,7 +129,7 @@ The package does not seed `payment_tax_rates`. With local tax, the app must inse
 
 ## Queue
 
-Webhook processing runs in `ProcessWebhookEventJob` on `payments.queue`. The job sets no `$tries`, `$backoff` or timeout of its own; the worker's settings apply. See [Webhooks](Webhooks.md).
+Webhook processing runs in `ProcessWebhookEventJob` on `payments.queue`, with `$tries = 5` and `$backoff = [10, 60, 300, 900]`; it sets no timeout of its own. `php artisan payments:retry-webhooks` queues stored events that are still unprocessed. See [Webhooks](Webhooks.md#operations).
 
 PDF rendering of local documents runs in `RenderInvoicePdfJob` on the same queue, with `$tries = 3` and `$backoff = [10, 60]`.
 

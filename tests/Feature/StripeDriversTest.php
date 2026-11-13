@@ -146,3 +146,20 @@ it('lets an app replace a driver through the manager', function (): void {
 
     expect(Payments::tax($ctx))->toBe($fake);
 });
+
+it('reads account requirements without a minimum deadline', function (): void {
+    $this->stripe->on('GET /v2/core/accounts/acct_test', [
+        'id' => 'acct_test', 'object' => 'v2.core.account', 'display_name' => 'Operator', 'contact_email' => 'ops@example.com',
+        'configuration' => ['merchant' => ['capabilities' => ['card_payments' => ['status' => 'active']]]],
+        'requirements' => ['entries' => [
+            ['awaiting_action_from' => 'user', 'description' => 'Add a bank account', 'minimum_deadline' => null],
+            ['awaiting_action_from' => 'user', 'description' => 'Verify identity', 'minimum_deadline' => ['status' => 'currently_due']],
+        ]],
+    ]);
+    $ctx = $this->stripeContext();
+
+    $account = Payments::accounts($ctx)->retrieve($ctx);
+
+    expect($account->requirementsDue)->toBe(['Verify identity'])
+        ->and($account->capabilities['payments'])->toBe('active');
+});

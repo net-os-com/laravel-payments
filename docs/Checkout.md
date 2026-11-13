@@ -26,7 +26,7 @@ Implemented by `StripeCheckoutDriver`. All three methods call `$context->require
 | `customerEmail` | `string` | yes | Prefills Checkout and is the receipt address. |
 | `successUrl` | `string` | yes | Stripe `success_url`. |
 | `cancelUrl` | `string` | yes | Stripe `cancel_url`. |
-| `expiresAt` | `CarbonImmutable` | yes | Stripe `expires_at`. Stripe only accepts 30 minutes to 24 hours from now; the package does not check this. |
+| `expiresAt` | `CarbonImmutable` | yes | Stripe `expires_at`. Must be 30 minutes to 24 hours from now, as Stripe requires; otherwise `create()` throws `InvalidArgumentException` before calling Stripe. |
 | `providerDiscountId` | `?string` | yes (nullable) | A Stripe promotion code id (`promo_...`). Only used when discounts are `stripe`. |
 | `description` | `string` | yes | PaymentIntent description and, with Stripe invoicing, invoice description. |
 | `invoiceFooter` | `?string` | no | Footer of the Stripe invoice. |
@@ -39,7 +39,7 @@ Implemented by `StripeCheckoutDriver`. All three methods call `$context->require
 | `description` | `string` | | Stripe `product_data.name`. |
 | `unitAmount` | `int` | | Minor units, **including tax**. |
 | `quantity` | `int` | `1` | |
-| `taxPercentage` | `?float` | `null` | Inclusive rate when tax is local. Ignored when tax is `stripe`. |
+| `taxPercentage` | `?float` | `null` | Inclusive rate. Required on every line when tax is not `stripe` (`create()` throws `InvalidArgumentException` for a line without one). Ignored when tax is `stripe`. |
 
 Every price is sent with `tax_behavior: inclusive`: amounts always include tax, whichever source calculates it.
 
@@ -62,11 +62,11 @@ $params = [
 | Source | Value | Added to the session |
 | --- | --- | --- |
 | Tax | `stripe` | `automatic_tax: { enabled: true }` |
-| Tax | `local` | Per line with a `taxPercentage`: `tax_rates: [StripeTaxRates::inclusive($accountId, $percentage)]`. Lines without one get no tax rate. |
+| Tax | `local` | Per line: `tax_rates: [StripeTaxRates::inclusive($accountId, $percentage)]`. A line without a `taxPercentage` is refused before the session is created. |
 | Invoicing | `stripe` | `invoice_creation: { enabled: true, invoice_data: { description, footer, metadata, rendering_options: { amount_tax_display: include_inclusive_tax } } }` (empty values filtered) |
 | Invoicing | `local` | nothing |
 | Discounts | `stripe`, `providerDiscountId` given | `discounts: [{ promotion_code: providerDiscountId }]` |
-| Discounts | `stripe`, no `providerDiscountId` | `allow_promotion_codes: true` (Stripe shows its own code field) |
+| Discounts | `stripe`, no `providerDiscountId` | nothing; Stripe's own code field is not offered |
 | Discounts | `local` | nothing; send already-discounted `unitAmount`s |
 
 ### Receipt email
@@ -108,7 +108,7 @@ $payment->update(['provider_checkout_id' => $checkout->providerCheckoutId]);
 return redirect()->away($checkout->url);
 ```
 
-Stripe API errors (`Stripe\Exception\ApiErrorException`) are not caught by the package; catch them in the app.
+Stripe API errors (`Stripe\Exception\ApiErrorException`) are not caught by the package; catch them in the app. Before calling Stripe, `create()` throws `InvalidArgumentException` when `expiresAt` is not 30 minutes to 24 hours ahead, or when tax is not `stripe` and a line has no `taxPercentage`.
 
 ## ProviderCheckoutData
 
@@ -188,4 +188,4 @@ The webhook and the success page can arrive in any order and both should run the
 
 ## Expiry and holds
 
-The package only passes `expiresAt` through. If the app holds stock (a desk, a seat) for an open checkout, it must release it itself when the checkout expires: on `checkout.session.expired` via `PaymentCheckoutUpdated`, and as a fallback when it sees an `OPEN` checkout past its expiry (expire it then). The reference app holds for 31 minutes, Stripe's 30 minute minimum plus a margin.
+The package checks that `expiresAt` is within Stripe's window (30 minutes to 24 hours from now) and passes it through. If the app holds stock (a desk, a seat) for an open checkout, it must release it itself when the checkout expires: on `checkout.session.expired` via `PaymentCheckoutUpdated`, and as a fallback when it sees an `OPEN` checkout past its expiry (expire it then). The reference app holds for 31 minutes, Stripe's 30 minute minimum plus a margin.

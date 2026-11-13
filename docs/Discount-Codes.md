@@ -91,6 +91,10 @@ sequenceDiagram
     Drv->>Stripe: POST coupons {name, percent_off, duration: once, redeem_by?, metadata} (Stripe-Account)
     Stripe-->>Drv: coupon
     Drv->>Stripe: POST promotion_codes {promotion: {type: coupon, coupon}, code, max_redemptions?, expires_at?, metadata}
+    alt promotion code call fails
+        Drv->>Stripe: DELETE coupons/{id} (errors ignored)
+        Drv-->>App: rethrow
+    end
     Stripe-->>Drv: promotion code
     Drv->>DB: insert (source stripe, provider ids, times_redeemed)
     Drv-->>App: PaymentDiscountCode
@@ -98,7 +102,7 @@ sequenceDiagram
 
 - `duration: once` applies to one payment (relevant for subscriptions only; Checkout here is `mode: payment`).
 - The local row stores `provider = stripe`, `provider_account_id`, `provider_discount_id` (promotion code id, `promo_...`) and `provider_coupon_id`.
-- If the promotion code call fails after the coupon was created, the coupon stays at Stripe without a local row.
+- If the promotion code call fails after the coupon was created, the driver deletes the coupon again (a failure of that delete is ignored and not reported) and rethrows the original exception. No local row is written.
 
 ### Local: what is created
 
@@ -113,7 +117,7 @@ $result = Payments::discounts($context)->validate($context, $typedCode, $checkou
 
 `ValidatesDiscountCodes::validate()`:
 
-1. Finds the row with `whereCode($code)` (trims and upper-cases the input) **and** `source = $context->sources->discounts`. A code created under another source does not count.
+1. Finds the row with `whereCode($code)` (trims and upper-cases the input) **and** `source = $context->sources->discounts`. A code created under another source does not count. For the `stripe` source it also requires `provider_account_id = $context->providerAccountId`, because a Stripe code only works on the account it was created on.
 2. No row: `DiscountValidationData::invalid('This code does not exist.')`.
 3. Otherwise asks the row's computed `status` for a `reason()`. `null` reason: valid. A `RESERVED` code counts as valid when the hold belongs to `$reference` (the checkout that reserved it).
 
@@ -126,7 +130,7 @@ class DiscountValidationData extends Data
 }
 ```
 
-It does **not** check `provider_account_id`. A Stripe code created on an earlier connected account still validates, but its promotion code does not exist on the new account, so the checkout fails at Stripe.
+A Stripe code created on an earlier connected account is therefore reported as `This code does not exist.`
 
 ### Statuses and reasons
 
@@ -148,9 +152,9 @@ It does **not** check `provider_account_id`. A Stripe code created on an earlier
 Stripe promotion codes have no start date, so `valid_from` exists only in the local row. Consequences for Stripe codes:
 
 - When the customer types the code **in the app**, `validate()` rejects it before `valid_from` (`SCHEDULED`).
-- When the app opens Checkout **without** a `providerDiscountId`, Checkout shows Stripe's own code field (`allow_promotion_codes`), and Stripe accepts a scheduled code there.
+- Checkout never shows Stripe's own code field (`allow_promotion_codes` is never set), so a code can only reach Stripe through `providerDiscountId`.
 
-To enforce start dates strictly with Stripe codes, always validate in the app and pass the code to the checkout, or create the code only when it becomes valid.
+Pass a `providerDiscountId` only for a code that `validate()` accepted; the package does not check the start date again in `StripeCheckoutDriver::create()`.
 
 ## Applying a code at checkout
 

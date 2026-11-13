@@ -26,15 +26,10 @@ So a new **provider** needs a new `Provider` case, and a new **source** needs a 
 
 ## Replacing a driver from the app
 
-The package does **not** bind the managers as singletons. `Payments` is a singleton and gets its own manager instances from the container when it is first built, so calling `app(TaxManager::class)->extend(...)` on a fresh instance has no effect on the facade. Bind the manager as a singleton in your service provider's `register()` (before `Payments` is resolved), then extend that instance:
+The service provider binds the seven managers as container singletons, and `Payments` receives those same instances. Extend the manager from your service provider's `boot()`:
 
 ```php
 use NetOS\Payments\Managers\TaxManager;
-
-public function register(): void
-{
-    $this->app->singleton(TaxManager::class);
-}
 
 public function boot(): void
 {
@@ -44,7 +39,7 @@ public function boot(): void
 }
 ```
 
-Alternatively, `$this->app->afterResolving(TaxManager::class, fn (TaxManager $manager) => $manager->extend('local', ...))` extends every instance the container builds, including the one `Payments` receives.
+A manager caches a driver once it is created, and `extend()` does not clear that cache. Register the driver before the name is first used, for example in `boot()`.
 
 ## Example: a local tax driver with per-line categories from config
 
@@ -97,7 +92,7 @@ To add, say, a provider `acme`:
 
 3. **Managers:** add `createAcmeDriver()` to `AccountManager`, `CheckoutManager`, `RefundManager` and `WebhookManager`, or `extend('acme', ...)` them.
 4. **Sources:** the `stripe` source drivers (Stripe invoices, Stripe Tax, Stripe promotion codes) only work with Stripe. For a provider that also invoices or calculates tax, add a `CapabilitySource` case and source drivers. Otherwise merchants on that provider must use `local` sources, and `StripeCheckoutDriver`'s source handling has to be mirrored in the new checkout driver.
-5. **Webhooks:** `translate()` must verify the signature and throw `UnexpectedValueException` (or Stripe's `SignatureVerificationException`) for bad requests, because only those map to `400` in `WebhookController`. `checkoutId()` and `isAccountEvent()` decide what `ProcessWebhookEventJob` does.
+5. **Webhooks:** `translate()` must verify the signature and throw `UnexpectedValueException` (or Stripe's `SignatureVerificationException`) for bad requests, including a body that cannot be decoded, because only those map to `400` in `WebhookController`. `checkoutId()` and `isAccountEvent()` decide what `ProcessWebhookEventJob` does.
 6. **Config:** add a provider section to `config/payments.php` and read it in the `create...Driver()` methods.
 7. **Account context:** `PaymentContext::forAccount()` uses Stripe-managed sources; it is only meant for account calls and works for any provider.
 
@@ -145,7 +140,7 @@ public function creditNote(
 
 ## Discount drivers
 
-Reuse `NetOS\Payments\Drivers\Concerns\ValidatesDiscountCodes` for `validate()` and `list()`: it reads `payment_discount_codes` filtered by the context's discount source, and `list()` also by `provider_account_id` for the `stripe` source. Write rows with the right `source` value so they are found.
+Reuse `NetOS\Payments\Drivers\Concerns\ValidatesDiscountCodes` for `validate()` and `list()`: it reads `payment_discount_codes` filtered by the context's discount source, and for the `stripe` source both `validate()` and `list()` also filter by `provider_account_id`. Write rows with the right `source` value so they are found.
 
 `ManagesDiscountCodes` has two methods for holding a one-time code during an open checkout, and `validate()` takes the checkout's reference:
 
@@ -161,8 +156,9 @@ public function release(PaymentContext $context, PaymentDiscountCode $discountCo
 
 ## Testing drivers
 
-The package has no tests yet. Practical options:
+The package's own suite is described in [Testing](Testing.md). Practical options for a new driver:
 
+- Reuse the suite's `FakeStripe` approach: register a recording fake with `Stripe\ApiRequestor::setHttpClient()` so the real Stripe client talks to it.
 - Bind your own `Stripe\StripeClient` in the container (for example pointed at `stripe-mock`) before the managers create drivers.
 - Construct drivers directly with fakes; all their dependencies are constructor arguments.
 - Build contexts with `new PaymentContext(Provider::STRIPE, 'acct_test', PaymentProfile::LOCALLY_MANAGED->sources(), new IssuerData('Test'))`.

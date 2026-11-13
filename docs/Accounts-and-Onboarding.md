@@ -166,7 +166,7 @@ sequenceDiagram
 | `businessName` | `identity.business_details.registered_name`, falling back to `display_name` |
 | `email` | `contact_email` |
 | `capabilities` | `['payments' => card_payments.status, 'payouts' => stripe_balance.payouts.status]`, each `unrequested` when missing |
-| `requirementsDue` | descriptions of requirement entries with `awaiting_action_from = user` and `minimum_deadline.status` in `currently_due` or `past_due` |
+| `requirementsDue` | descriptions of requirement entries with `awaiting_action_from = user` and `minimum_deadline.status` in `currently_due` or `past_due` (an entry without `minimum_deadline` is left out) |
 
 Status, first match wins:
 
@@ -231,11 +231,11 @@ An app can compare this with its own standard and offer to fix differences (the 
 $config = Payments::accounts($context)->updateBranding($context, new BrandingData(
     primaryColor: '#0A2D51',
     secondaryColor: '#F5A623',
-    logoPath: '/tmp/logo.png',   // readable path or URL of a PNG or JPG
+    logoPath: '/tmp/logo.png',   // readable local file of a PNG or JPG (no URLs)
 ));
 ```
 
-1. When `logoPath` is set, the driver reads it with `file_get_contents()`, copies it to a `tmpfile()` and uploads it with `files.create(['purpose' => 'business_logo'])`. The call is made **as the platform** (no `stripe_account`), so the file belongs to the platform account; Accounts v2 accepts a platform file id for the connected account's logo.
+1. When `logoPath` is set, the driver checks that it is a readable local file: a URL or stream wrapper (anything starting with `scheme://`), a missing or an unreadable file throws `RuntimeException('The logo must be a readable local file.')`. It opens the file, uploads it with `files.create(['purpose' => 'business_logo'])` and closes the handle again, also when the upload fails. The call is made **as the platform** (no `stripe_account`), so the file belongs to the platform account; Accounts v2 accepts a platform file id for the connected account's logo.
 2. Updates `configuration.merchant.branding` with the non-null values (`primary_color`, `secondary_color`, `logo`).
 3. Returns `configuration()`.
 
@@ -255,7 +255,7 @@ Sets `defaults.locales`, the language of Stripe's emails and invoices for that a
 $url = Payments::accounts($context)->dashboardUrl($context);
 ```
 
-Returns `https://dashboard.stripe.com/test/dashboard` when the platform secret starts with `sk_test_`, otherwise `https://dashboard.stripe.com/dashboard`. It is not account-specific: the account holder signs in to their own dashboard. The method makes no API call and does not use the account id from the context.
+Returns `https://dashboard.stripe.com/test/dashboard` when the platform secret starts with `sk_test_` or `rk_test_` (secret and restricted test keys), otherwise `https://dashboard.stripe.com/dashboard`. It is not account-specific: the account holder signs in to their own dashboard. The method makes no API call and does not use the account id from the context.
 
 ## Sandbox vs live
 
@@ -263,4 +263,4 @@ There is no mode setting. The mode follows the platform secret in `STRIPE_SECRET
 
 - a test (`sk_test_...`) key creates test connected accounts, test checkouts and test webhooks;
 - webhook signing secrets are per event destination and per mode, so test and live need their own `STRIPE_WEBHOOK_SECRET` and `STRIPE_THIN_WEBHOOK_SECRET`;
-- `dashboardUrl()` only recognizes the `sk_test_` prefix (a restricted `rk_test_` key yields the live URL).
+- `dashboardUrl()` recognizes both the `sk_test_` and the `rk_test_` prefix.

@@ -8,7 +8,7 @@ use NetOS\Payments\Models\PaymentWebhookEvent;
 
 /**
  * Queues stored webhook events that were never processed, e.g. because the queue was down when they arrived or every
- * attempt failed. Safe to run on a schedule: the job skips processed events and is unique per event.
+ * attempt failed. Safe to run on a schedule: the job skips events that are already processed.
  */
 class RetryWebhookEventsCommand extends Command
 {

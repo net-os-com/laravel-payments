@@ -1,5 +1,7 @@
 # Laravel Payments
 
+[![run-tests](https://github.com/net-os-com/laravel-payments/actions/workflows/run-tests.yml/badge.svg)](https://github.com/net-os-com/laravel-payments/actions/workflows/run-tests.yml)
+
 `net-os/laravel-payments` is a PSP-agnostic payments layer for multi-tenant Laravel applications. It gives an application one API for connected merchant accounts, hosted checkouts, refunds, invoices, tax and discount codes, and lets each merchant choose per capability whether the payment provider or the application handles it.
 
 Stripe Connect is the first (and currently only) provider. The package is extracted from Net OS, a workplace management platform, which is its reference host app.
@@ -40,7 +42,7 @@ Drivers keep no state: every call receives a `PaymentContext` that says whose mo
 | Requirement | Version |
 | --- | --- |
 | PHP | `^8.4` |
-| Laravel | 12 (`illuminate/support: ^12.0`; the package also uses the database, HTTP, queue and event components, so in practice it needs the full framework) |
+| Laravel | 12 (`laravel/framework: ^12.0`) |
 | `spatie/laravel-data` | `^4.0` |
 | `lorisleiva/laravel-actions` | `^2.8` |
 | `stripe/stripe-php` | `^22.1` (Accounts v2 and thin events) |
@@ -82,21 +84,24 @@ Both are auto-discovered through `extra.laravel` in `composer.json`:
 The service provider:
 
 - merges `config/payments.php` under the `payments` key;
+- binds the seven capability managers as singletons, so a driver added with `extend()` is the one the facade uses;
 - binds `NetOS\Payments\Payments` as a singleton (the facade's root);
 - binds `Stripe\StripeClient` as a singleton, built with `payments.stripe.secret`;
 - loads the **central** migrations from `database/migrations` (not the `tenant` subdirectory);
 - loads the webhook route `POST {webhook_path}/{provider}`;
 - loads the signed document routes `GET {routes.documents_prefix}/{document}` and `GET {routes.documents_prefix}/{document}/pdf`;
-- registers the views under the namespace `payments`.
+- registers the views under the namespace `payments`;
+- registers the `payments:retry-webhooks` command (in the console).
 
-### 3. Publish the config and views (optional)
+### 3. Publish the config, views and migrations (optional)
 
 ```bash
 php artisan vendor:publish --tag=payments-config
 php artisan vendor:publish --tag=payments-views
+php artisan vendor:publish --tag=payments-migrations
 ```
 
-`payments-config` copies `config/payments.php` to your app; `payments-views` copies the invoice and credit note view to `resources/views/vendor/payments`. Migrations are loaded from the package, not published.
+`payments-config` copies `config/payments.php` to your app; `payments-views` copies the invoice and credit note view to `resources/views/vendor/payments`; `payments-migrations` copies `database/migrations`, including the `tenant` subdirectory, to your app's `database/migrations`. The central migrations are also loaded from the package without publishing.
 
 ### 4. Migrations: central vs tenant
 
@@ -109,7 +114,7 @@ The package has two groups of migrations:
 
 The central migrations are loaded automatically and run with `php artisan migrate`.
 
-The tenant migrations are **not** loaded automatically. Register their path wherever your app runs tenant migrations.
+The tenant migrations are **not** loaded automatically. Register their path wherever your app runs tenant migrations. Alternatively, publish them with the `payments-migrations` tag; they then land in your app's `database/migrations/tenant`.
 
 **stancl/tenancy (database per tenant):** add the path to `migration_parameters` in `config/tenancy.php`:
 
@@ -292,14 +297,14 @@ $checkout = Payments::checkouts($context)->create($context, new CreateCheckoutDa
             description: 'Desk 4.12, Mon 9 Nov 09:00 - 12:00',
             unitAmount: 2400,          // minor units, incl. tax
             quantity: 1,
-            taxPercentage: 21.0,       // only used when tax is local
+            taxPercentage: 21.0,       // required when tax is not stripe
         ),
     ],
     currency: 'eur',
     customerEmail: 'guest@example.com',
     successUrl: 'https://app.example.com/pay/'.$payment->uuid,
     cancelUrl: 'https://app.example.com/pay/'.$payment->uuid.'?cancelled=1',
-    expiresAt: CarbonImmutable::now()->addMinutes(31),
+    expiresAt: CarbonImmutable::now()->addMinutes(31),   // 30 minutes to 24 hours ahead
     providerDiscountId: null,          // a Stripe promotion code id, when discounts are stripe
     description: 'Desk booking',
     invoiceFooter: 'Thank you for booking.',
@@ -470,11 +475,14 @@ The route is loaded without a middleware group (no session, no CSRF, no throttle
 ### What happens
 
 1. `StripeWebhookDriver::translate()` verifies the signature and maps the request to `ProviderEventData`.
-2. The controller stores it in `payment_webhook_events` (unique per provider and event id). A duplicate delivery is acknowledged and not processed again.
+2. The controller stores it in `payment_webhook_events` (unique per provider and event id) and queues it while it is unprocessed. A duplicate delivery of an already processed event is acknowledged and not processed again; a redelivery of an event that was never processed is queued again.
 3. `ProcessWebhookEventJob` runs on the `payments` queue:
    - `checkout.session.*` events dispatch `PaymentCheckoutUpdated`;
    - `v2.core.account*` events re-sync the matching `PaymentAccount` with `SyncPaymentAccountAction`, which dispatches `PaymentAccountUpdated`;
-   - events without a connected account, and all other types, are stored and skipped.
+   - events without a connected account, and all other types, are stored and skipped;
+   - a failing event is tried up to 5 times (backoff 10, 60, 300 and 900 seconds).
+
+`php artisan payments:retry-webhooks --older-than=10` queues stored events that are still unprocessed after the given number of minutes (default 10). It is safe to run on a schedule.
 
 The job does not initialize tenancy. Listeners look up the `PaymentAccount` by provider account id and switch to its owner themselves.
 
@@ -551,14 +559,13 @@ Only `Provider::STRIPE` exists. See [Extending](docs/Extending.md) to add a prov
 
 A short list; see [Security notes and known limitations](docs/Security-and-Limitations.md) for all of them with file references.
 
-- No tests. No CI. API may change.
+- Proof of concept: the API may change. The tests use a fake of Stripe's API, not Stripe itself.
 - Only Stripe. Accounts, checkouts and refunds have no local driver.
 - The package sends no invoice or credit note mail; the app listens to `PaymentInvoiceIssued`.
 - Local document links are signed without expiry. PDFs are rendered by the spatie/laravel-pdf driver you configure (with Cloudflare, the document HTML including the payer's personal data goes to Cloudflare) and stored on `payments.local.invoice_disk` under a path with a random suffix.
 - One-time local codes are only protected against concurrent use when the app calls `reserve()`.
-- Stripe promotion codes have no start date: a scheduled Stripe code is only blocked by the app's own `validate()`, not by Stripe Checkout's code field.
+- Stripe promotion codes have no start date: a scheduled Stripe code is only blocked by the app's own `validate()`. Stripe Checkout's own code field is never offered.
 - Discount code validation is not rate limited by the package; the app must throttle the endpoint that calls `validate()`. Codes need enough entropy.
-- A webhook event that was stored but never processed (for example because dispatching the job failed) is not retried by a redelivery; there is no command to re-dispatch stored events.
 - The package does not store `PaymentAccount` rows on `create()`; the app does.
 
 ## Documentation (wiki)
@@ -580,8 +587,20 @@ The `docs/` directory holds the full documentation, written to be copied to the 
 - [Extending](docs/Extending.md)
 - [Host App Integration](docs/Host-App-Integration.md)
 - [Security and Limitations](docs/Security-and-Limitations.md)
+- [Testing](docs/Testing.md)
 - [Glossary](docs/Glossary.md)
 
 ## License
 
 MIT. See [LICENSE](LICENSE).
+
+## Testing
+
+The test suite uses Pest and Orchestra Testbench with an in-memory SQLite database. Stripe is replaced by a fake HTTP client that records every request (`tests/Support/FakeStripe.php`), so no network or keys are needed.
+
+```bash
+composer install
+composer test
+```
+
+GitHub Actions runs the suite on pushes and pull requests that change code (PHP 8.4 and 8.5, Laravel 12). See [Testing](docs/Testing.md).

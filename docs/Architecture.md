@@ -53,7 +53,7 @@ The context is used twice: once to pick the driver, and again as the first argum
 
 Because they extend `Illuminate\Support\Manager`:
 
-- a driver is created the first time it is requested and then cached in the manager for the lifetime of the manager (the managers are resolved once into the `Payments` singleton, so effectively for the lifetime of the process);
+- a driver is created the first time it is requested and then cached in the manager for the lifetime of the manager (the service provider binds the managers as container singletons, so effectively for the lifetime of the process);
 - drivers must therefore be stateless across merchants, which is why everything merchant-specific comes in through `PaymentContext`;
 - custom drivers can be added with `extend()` (see [Extending](Extending.md)).
 
@@ -87,8 +87,8 @@ The sources are read in two places:
 | Source | `stripe` | `local` |
 | --- | --- | --- |
 | Invoicing | `invoice_creation.enabled` | No invoice in Checkout; the app issues one later with `LocalInvoiceDriver`. |
-| Tax | `automatic_tax.enabled` (Stripe Tax) | Each line item with a `taxPercentage` gets an inclusive Stripe tax rate. |
-| Discounts | The given promotion code in `discounts`, or `allow_promotion_codes` when none is given | Nothing; the app sends already-lowered line items. |
+| Tax | `automatic_tax.enabled` (Stripe Tax) | Each line item gets an inclusive Stripe tax rate from its `taxPercentage`, which is required. |
+| Discounts | The given promotion code in `discounts`; without one, no discount (Stripe's own code field is never offered) | Nothing; the app sends already-lowered line items. |
 
 Whatever the sources, every session sets `customer_creation: always`, `billing_address_collection: required` and `tax_id_collection.enabled`, so `ProviderCheckoutData::$customer` holds the customer's billing details for either invoicing source.
 
@@ -165,7 +165,7 @@ sequenceDiagram
 ## Statelessness and long-running workers
 
 - Drivers keep no per-merchant state. `PaymentContext` is a `final readonly` class.
-- `StripeTaxRates` has no cache; it lists the account's tax rates on every call.
+- `StripeTaxRates` remembers tax rate ids keyed by connected account and percentage, so its cache cannot mix merchants. It lives as long as the checkout driver, which the `CheckoutManager` singleton keeps for the lifetime of the process.
 - `LocalTaxDriver::calculate()` caches rates per category only inside one call.
 - `DocumentNumberer` and `LocalDocumentPresenter` hold no state; `RenderInvoicePdfJob` receives the document id and the context's `urlParameters`.
 - The `StripeClient` singleton holds only the platform secret.
@@ -184,6 +184,7 @@ routes/webhooks.php                     POST {webhook_path}/{provider}
 routes/documents.php                    GET {documents_prefix}/{document}, GET {documents_prefix}/{document}/pdf
 src/
   Actions/SyncPaymentAccountAction.php
+  Console/RetryWebhookEventsCommand.php payments:retry-webhooks
   Contracts/                            9 interfaces
   Data/                                 19 DTOs
   Drivers/Concerns/ValidatesDiscountCodes.php
@@ -201,4 +202,5 @@ src/
   Payments.php
   PaymentsServiceProvider.php
   Support/                              DocumentNumberer, LocalDocumentPresenter
+tests/                                  Pest suite, see Testing
 ```

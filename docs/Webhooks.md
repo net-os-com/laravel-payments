@@ -52,11 +52,12 @@ interface TranslatesWebhooks
 | `Provider::tryFrom($provider)` fails | `404` |
 | `translate()` throws `SignatureVerificationException` or `UnexpectedValueException` | `400` |
 | `PaymentWebhookEvent::firstOrCreate(['provider', 'provider_event_id'], ['type', 'provider_account_id', 'payload'])` | stored on the central connection |
-| row was just created | `ProcessWebhookEventJob::dispatch($event->id)` |
-| row already existed (duplicate delivery) | not dispatched again |
+| `firstOrCreate()` throws `UniqueConstraintViolationException` (two deliveries of the same event at once) | the row the other request stored is read instead |
+| row's `processed_at` is `null` (new, or a redelivery of an event that was never processed) | `ProcessWebhookEventJob::dispatch($event->id)` |
+| row already processed (duplicate delivery) | not dispatched again |
 | always (when the above succeed) | `204 No Content` |
 
-A body that is not valid JSON makes `json_decode(..., JSON_THROW_ON_ERROR)` throw `JsonException`, which the controller does not catch, so it results in a `500` rather than a `400`.
+A body that is not a JSON object makes the Stripe driver throw `UnexpectedValueException` before any signature check, so it results in a `400`.
 
 ## Stripe signature verification
 
@@ -64,8 +65,10 @@ A body that is not valid JSON makes `json_decode(..., JSON_THROW_ON_ERROR)` thro
 
 ```mermaid
 flowchart TD
-    Req[POST body + Stripe-Signature] --> Dec[json_decode, throw on error]
-    Dec --> Thin{"object == 'v2.core.event'?"}
+    Req[POST body + Stripe-Signature] --> Dec[json_decode]
+    Dec --> Arr{array?}
+    Arr -->|no| Bad[UnexpectedValueException]
+    Arr -->|yes| Thin{"object == 'v2.core.event'?"}
     Thin -->|yes| VT["WebhookSignature::verifyHeader(payload, signature, thin secret, DEFAULT_TOLERANCE)"]
     VT --> AccT{"related_object.type == 'v2.core.account'?"}
     AccT -->|yes| A1[account = related_object.id]
@@ -90,7 +93,9 @@ Events are stored in `payment_webhook_events` on the central connection, unique 
 
 ## ProcessWebhookEventJob
 
-`NetOS\Payments\Jobs\ProcessWebhookEventJob` (`ShouldQueue`, `Queueable`), queued on `payments.queue`, carries only the event row id.
+`NetOS\Payments\Jobs\ProcessWebhookEventJob` (`ShouldQueue`, `Queueable`), queued on `payments.queue`, carries only the event row id. It has `$tries = 5` and `$backoff = [10, 60, 300, 900]` seconds.
+
+The job is deliberately **not unique**: a redelivery must be able to queue an event again when an earlier dispatch was lost. Several jobs for the same row can therefore be queued; each skips the row once it is processed.
 
 ```mermaid
 flowchart TD
@@ -116,8 +121,8 @@ flowchart TD
 
 - Events without a connected account (platform events) are marked processed and skipped.
 - Unknown types are marked processed and skipped.
-- Listener exceptions for `PaymentCheckoutUpdated` propagate into the job (events are dispatched synchronously), mark the row failed and are rethrown so the queue retries according to the worker's `--tries` / backoff. The job sets no `$tries` itself.
-- An already processed row is skipped, so retries and duplicate jobs are safe.
+- Listener exceptions for `PaymentCheckoutUpdated` propagate into the job (events are dispatched synchronously), mark the row failed and are rethrown so the queue retries the job (5 tries, backoff 10, 60, 300 and 900 seconds).
+- An already processed row is skipped, so retries and duplicate jobs are safe. Two jobs for the same unprocessed row that run at the same time can both process it, so listeners must be idempotent.
 - The job does **not** initialize tenancy. Listeners must find the owner from the account id.
 
 ## Events
@@ -241,6 +246,6 @@ Trigger a test event: `stripe trigger checkout.session.completed --stripe-accoun
 ## Operations
 
 - **Inspecting:** query `payment_webhook_events` for rows with `failed_at` set, or with `processed_at` null and an old `created_at`.
-- **Reprocessing:** there is no command. Re-dispatch manually, e.g. `ProcessWebhookEventJob::dispatch($id)`; processed rows are skipped.
-- **Stuck rows:** if dispatching the job fails after the row was stored (for example the queue connection is down), the request returns an error, Stripe redelivers, `firstOrCreate()` finds the existing row and the job is not dispatched again. Such rows stay unprocessed until re-dispatched by hand.
+- **Reprocessing:** `php artisan payments:retry-webhooks` queues every row with `processed_at` null that was stored at least `--older-than` minutes ago (default `10`), including rows whose job failed all its tries. Processed rows are skipped, so it is safe to schedule, for example `Schedule::command('payments:retry-webhooks')->hourly()` in the app. A single row can also be queued by hand with `ProcessWebhookEventJob::dispatch($id)`.
+- **Stuck rows:** if dispatching the job fails after the row was stored (for example the queue connection is down), the request returns an error and Stripe redelivers. The redelivery finds the unprocessed row and queues it again. Rows Stripe stops redelivering are picked up by `payments:retry-webhooks`.
 - **Retention:** rows are never deleted by the package. Prune them in the app if needed (they contain customer emails and names from Stripe payloads).

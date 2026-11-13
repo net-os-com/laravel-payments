@@ -127,14 +127,16 @@ With local tax the app passes each line's `taxPercentage` in `CheckoutLineItemDa
 
 `NetOS\Payments\Drivers\Stripe\StripeTaxRates::inclusive(string $providerAccountId, float $percentage): string`
 
-1. Lists the connected account's active inclusive tax rates (`taxRates.all(['active' => true, 'inclusive' => true, 'limit' => 100])`).
-2. Returns the first whose `percentage` equals the requested percentage (as float) and whose `country` equals the upper-cased `payments.stripe.country`.
-3. Otherwise creates one: `display_name: VAT`, `percentage`, `inclusive: true`, `country` and `jurisdiction` set to the upper-cased country.
+1. Returns the id remembered for this account and percentage (rounded to 4 decimals), if any.
+2. Otherwise lists the connected account's active inclusive tax rates (`taxRates.all(['active' => true, 'inclusive' => true, 'limit' => 100])`) and pages through all of them.
+3. Returns the first whose `percentage` is within `0.0001` of the requested percentage (Stripe returns percentages as floats) and whose `country` equals the upper-cased `payments.stripe.country`.
+4. Otherwise creates one: `display_name: VAT`, `percentage`, `inclusive: true`, `country` and `jurisdiction` set to the upper-cased country.
+
+The found or created id is remembered per account and percentage for the lifetime of the `StripeTaxRates` object, so a checkout with many lines at the same rate asks Stripe once. The object belongs to the checkout driver, which the `CheckoutManager` singleton keeps, so in a long-running process (queue worker, Octane) the ids stay remembered until the process restarts.
 
 Limitations:
 
-- Only the first 100 active inclusive rates are checked; with more, duplicates can be created.
-- It makes one list call per line item on every checkout (no cache).
+- A rate archived at Stripe after it was remembered is still used until the process restarts.
 - `display_name` is always `VAT`.
 
 ## Discounts and tax
