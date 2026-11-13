@@ -56,7 +56,8 @@ For local documents it sets the document routes' middleware and the PDF disk:
 // Signed links of local invoices and credit notes; the tenant comes from the ?tenant parameter of the link.
 'routes' => [
     'documents_prefix' => 'payments/documents',
-    'documents_middleware' => [InitializeTenancyByRequestData::class],
+    // Only ?tenant may decide the tenant: the signature covers the query, not an X-Tenant header.
+    'documents_middleware' => [InitializeTenancyBySignedQuery::class],
 ],
 
 'local' => [
@@ -109,7 +110,7 @@ class TenantPaymentContextResolver implements ResolvesPaymentContext
 ```
 
 - The owner of a `PaymentAccount` is the tenant model (`forOwner($tenant)`).
-- `urlParameters` end up in the signed `hostedUrl` and `pdfUrl` of local documents, so the document routes can initialize tenancy (`InitializeTenancyByRequestData` in `payments.routes.documents_middleware`). Because `RenderInvoicePdfJob` and the presenter take them from the context, every context that issues, finds or credits a local document must carry them.
+- `urlParameters` end up in the signed `hostedUrl` and `pdfUrl` of local documents, so the document routes can initialize tenancy (`InitializeTenancyBySignedQuery` in `payments.routes.documents_middleware`: a subclass of stancl's `InitializeTenancyByRequestData` with `public static $header = null;`, so a replayed link with another `X-Tenant` header cannot switch tenants). Because `RenderInvoicePdfJob` and the presenter take them from the context, every context that issues, finds or credits a local document must carry them.
 - Before an account is connected, `providerAccountId` is `null`; code paths that need an account get `AccountNotConnectedException` from the drivers, which the app turns into validation messages.
 - The sources are checked with `assertAllowed()` every time a context is built.
 

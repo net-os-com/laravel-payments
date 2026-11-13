@@ -45,6 +45,10 @@ The package is a proof of concept. This page lists what it does not do, what the
 - All amounts are integers in minor units, tax-inclusive. The package does not validate amounts, currencies, percentages or expiry windows; Stripe rejects some invalid values, the local drivers do not.
 - Checkouts are direct charges on the connected account with `fees_collector` and `losses_collector` set to `stripe`. The platform takes no application fee in this version.
 
+### Document links and tenancy
+
+Document links are signed on path and query only (`signed:relative`), so they survive proxies that change scheme or host. The tenant must therefore come from a signed query parameter: a tenancy middleware that also reads a header (stancl's `InitializeTenancyByRequestData` reads `X-Tenant` first) would let a valid link be replayed against another tenant's document with the same id. Use a middleware that only reads the query parameter.
+
 ## Known limitations
 
 | Area | Limitation |
