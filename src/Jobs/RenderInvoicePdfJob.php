@@ -7,6 +7,7 @@ use Illuminate\Contracts\Queue\ShouldQueue;
 use Illuminate\Foundation\Bus\Dispatchable;
 use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
+use Illuminate\Support\Str;
 use NetOS\Payments\Events\PaymentInvoiceIssued;
 use NetOS\Payments\Models\PaymentInvoice;
 use NetOS\Payments\Support\LocalDocumentPresenter;
@@ -44,7 +45,8 @@ class RenderInvoicePdfJob implements ShouldQueue
 
         if ($document->pdf_path === null) {
             $disk = (string) config('payments.local.invoice_disk');
-            $path = sprintf('invoices/%s/%s.pdf', $document->issued_at->format('Y'), $document->number);
+            // A random part keeps paths unique even when several applications or tenants share a disk.
+            $path = sprintf('invoices/%s/%s-%s.pdf', $document->issued_at->format('Y'), $document->number, Str::lower(Str::random(16)));
 
             Pdf::view('payments::invoices.document', ['document' => $document, 'pdfUrl' => null])
                 ->format('a4')
