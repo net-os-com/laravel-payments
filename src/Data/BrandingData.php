@@ -10,7 +10,7 @@ class BrandingData extends Data
         /** Hex, e.g. #0A2D51. */
         public ?string $primaryColor = null,
         public ?string $secondaryColor = null,
-        /** A readable path or URL of a PNG or JPG; uploaded to the provider. */
+        /** A readable local file path of a PNG or JPG (no URLs); uploaded to the provider. */
         public ?string $logoPath = null,
     ) {}
 }
