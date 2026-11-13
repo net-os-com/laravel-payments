@@ -1,8 +1,12 @@
 @php
     /** @var \NetOS\Payments\Models\PaymentInvoice $document */
     $isCreditNote = $document->type === 'credit_note';
-    $money = fn (int $minor): string => ($document->currency === 'eur' ? '€' : mb_strtoupper($document->currency) . ' ')
-        . number_format(($isCreditNote ? -$minor : $minor) / 100, 2, ',', '.');
+    $money = function (int $minor) use ($document, $isCreditNote): string {
+        $signed = $isCreditNote ? -$minor : $minor;
+        $symbol = $document->currency === 'eur' ? '€' : mb_strtoupper($document->currency) . ' ';
+
+        return ($signed < 0 ? '-' : '') . $symbol . number_format(abs($signed) / 100, 2, ',', '.');
+    };
     $issuer = $document->issuer;
     $payer = $document->payer ?? [];
     $taxPerRate = collect($document->lines)
@@ -66,7 +70,9 @@
                 @if (! empty($payer['companyName']))
                     <strong>{{ $payer['companyName'] }}</strong><br>
                 @endif
-                {{ $payer['name'] ?? $document->payer_name }}<br>
+                @if (($payer['name'] ?? $document->payer_name) !== ($payer['companyName'] ?? null))
+                    {{ $payer['name'] ?? $document->payer_name }}<br>
+                @endif
                 {{ $payer['email'] ?? $document->payer_email }}<br>
                 @if (! empty($payer['addressLine1']))
                     {{ $payer['addressLine1'] }}<br>
