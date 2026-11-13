@@ -6,8 +6,8 @@ use Illuminate\Contracts\View\View;
 use Illuminate\Support\Arr;
 use Illuminate\Routing\Controller;
 use Illuminate\Support\Facades\Storage;
-use Illuminate\Support\Facades\URL;
 use NetOS\Payments\Models\PaymentInvoice;
+use NetOS\Payments\Support\LocalDocumentPresenter;
 use Symfony\Component\HttpFoundation\StreamedResponse;
 
 /**
@@ -23,7 +23,10 @@ class DocumentController extends Controller
             'document' => $model,
             'pdfUrl' => $model->pdf_path === null
                 ? null
-                : URL::signedRoute('payments.documents.pdf', [...Arr::except(request()->query(), ['signature', 'expires']), 'document' => $model->id]),
+                : LocalDocumentPresenter::signedUrl(
+                    'payments.documents.pdf',
+                    [...Arr::except(request()->query(), ['signature', 'expires']), 'document' => $model->id],
+                ),
         ]);
     }
 
