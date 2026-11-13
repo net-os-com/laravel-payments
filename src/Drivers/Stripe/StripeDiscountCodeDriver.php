@@ -2,6 +2,7 @@
 
 namespace NetOS\Payments\Drivers\Stripe;
 
+use Carbon\CarbonInterface;
 use NetOS\Payments\Contracts\ManagesDiscountCodes;
 use NetOS\Payments\Data\CreateDiscountCodeData;
 use NetOS\Payments\Drivers\Concerns\ValidatesDiscountCodes;
@@ -96,6 +97,16 @@ class StripeDiscountCodeDriver implements ManagesDiscountCodes
     /**
      * Stripe counts the redemption itself; the mirror copies its count.
      */
+    /**
+     * Stripe enforces max_redemptions itself, so nothing is held.
+     */
+    public function reserve(PaymentContext $context, PaymentDiscountCode $discountCode, string $reference, CarbonInterface $until): bool
+    {
+        return true;
+    }
+
+    public function release(PaymentContext $context, PaymentDiscountCode $discountCode, string $reference): void {}
+
     public function redeem(PaymentContext $context, PaymentDiscountCode $discountCode): PaymentDiscountCode
     {
         $promotionCode = $this->stripe->promotionCodes->retrieve(

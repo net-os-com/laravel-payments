@@ -4,6 +4,8 @@ namespace NetOS\Payments\Drivers\Concerns;
 
 use Illuminate\Support\Collection;
 use NetOS\Payments\Data\DiscountValidationData;
+use NetOS\Payments\Enums\CapabilitySource;
+use NetOS\Payments\Enums\DiscountCodeStatus;
 use NetOS\Payments\Models\PaymentDiscountCode;
 use NetOS\Payments\PaymentContext;
 
@@ -12,7 +14,7 @@ use NetOS\Payments\PaymentContext;
  */
 trait ValidatesDiscountCodes
 {
-    public function validate(PaymentContext $context, string $code): DiscountValidationData
+    public function validate(PaymentContext $context, string $code, ?string $reference = null): DiscountValidationData
     {
         $discountCode = PaymentDiscountCode::query()
             ->whereCode($code)
@@ -23,7 +25,9 @@ trait ValidatesDiscountCodes
             return DiscountValidationData::invalid('This code does not exist.');
         }
 
-        $reason = $discountCode->status->reason();
+        $status = $discountCode->status;
+        $isOwnHold = $status === DiscountCodeStatus::RESERVED && ! $discountCode->isReserved($reference);
+        $reason = $isOwnHold ? null : $status->reason();
 
         return $reason === null
             ? new DiscountValidationData(true, null, $discountCode)
@@ -35,6 +39,13 @@ trait ValidatesDiscountCodes
      */
     public function list(PaymentContext $context): Collection
     {
-        return PaymentDiscountCode::query()->latest()->get();
+        return PaymentDiscountCode::query()
+            ->where('source', $context->sources->discounts)
+            ->when(
+                $context->sources->discounts === CapabilitySource::STRIPE,
+                fn ($query) => $query->where('provider_account_id', $context->providerAccountId),
+            )
+            ->latest()
+            ->get();
     }
 }

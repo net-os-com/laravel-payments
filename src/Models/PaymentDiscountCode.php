@@ -27,6 +27,8 @@ use NetOS\Payments\Models\Concerns\UsesTenantConnection;
  * @property string|null $provider_discount_id
  * @property string|null $provider_coupon_id
  * @property int $times_redeemed
+ * @property string|null $reserved_reference
+ * @property CarbonImmutable|null $reserved_until
  * @property int|null $created_by
  * @property CarbonImmutable|null $deactivated_at
  * @property int|null $deactivated_by
@@ -52,6 +54,8 @@ class PaymentDiscountCode extends Model
         'provider_discount_id',
         'provider_coupon_id',
         'times_redeemed',
+        'reserved_reference',
+        'reserved_until',
         'created_by',
         'deactivated_at',
         'deactivated_by',
@@ -72,8 +76,20 @@ class PaymentDiscountCode extends Model
             $this->type === DiscountCodeType::ONE_TIME && $this->times_redeemed > 0 => DiscountCodeStatus::USED,
             $this->valid_until !== null && $this->valid_until->isBefore(today()) => DiscountCodeStatus::EXPIRED,
             $this->valid_from->isAfter(today()) => DiscountCodeStatus::SCHEDULED,
+            $this->isReserved() => DiscountCodeStatus::RESERVED,
             default => DiscountCodeStatus::ACTIVE,
         });
+    }
+
+    /**
+     * Held by an open checkout; pass that checkout's reference to treat its own hold as free.
+     */
+    public function isReserved(?string $exceptReference = null): bool
+    {
+        return $this->type === DiscountCodeType::ONE_TIME
+            && $this->reserved_until !== null
+            && $this->reserved_until->isFuture()
+            && ($exceptReference === null || $this->reserved_reference !== $exceptReference);
     }
 
     protected function casts(): array
@@ -87,6 +103,7 @@ class PaymentDiscountCode extends Model
             'provider' => Provider::class,
             'times_redeemed' => 'integer',
             'deactivated_at' => 'immutable_datetime',
+            'reserved_until' => 'immutable_datetime',
             'created_at' => 'immutable_datetime',
         ];
     }
