@@ -10,6 +10,7 @@ use NetOS\Payments\Data\TaxedLineData;
 use NetOS\Payments\Enums\CapabilitySource;
 use NetOS\Payments\Models\PaymentInvoice;
 use NetOS\Payments\PaymentContext;
+use NetOS\Payments\Support\DocumentNumberer;
 use RuntimeException;
 
 /**
@@ -19,7 +20,9 @@ use RuntimeException;
 class LocalInvoiceDriver implements ProvidesInvoices
 {
     public function __construct(
-        private readonly string $numberPrefix,
+        private readonly DocumentNumberer $numberer,
+        private readonly string $invoiceSeries,
+        private readonly string $creditNoteSeries,
     ) {}
 
     public function isHandledByCheckout(): bool
@@ -34,24 +37,23 @@ class LocalInvoiceDriver implements ProvidesInvoices
         }
 
         $invoice = DB::connection(config('payments.connections.tenant'))->transaction(function () use ($context, $data): PaymentInvoice {
-            $year = now()->format('Y');
-            $prefix = sprintf('%s-%s-', $this->numberPrefix, $year);
-            $last = PaymentInvoice::query()->where('number', 'like', $prefix . '%')->lockForUpdate()->max('number');
-            $sequence = $last === null ? 1 : (int) mb_substr((string) $last, mb_strlen($prefix)) + 1;
+            $issuedAt = now();
 
             return PaymentInvoice::query()->create([
-                'number' => $prefix . mb_str_pad((string) $sequence, 4, '0', STR_PAD_LEFT),
+                'type' => 'invoice',
+                'number' => $this->numberer->next($this->invoiceSeries, $issuedAt),
                 'status' => 'issued',
                 'reference' => $data->reference,
                 'issuer' => $context->issuer->toArray(),
                 'payer_name' => $data->payerName,
                 'payer_email' => $data->payerEmail,
+                'payer' => $data->customer?->toArray(),
                 'lines' => array_map(fn (TaxedLineData $line): array => $line->toArray(), $data->lines),
                 'discount_amount' => $data->discountAmount,
                 'tax_amount' => array_sum(array_map(fn (TaxedLineData $line): int => $line->taxAmount, $data->lines)),
                 'total' => array_sum(array_map(fn (TaxedLineData $line): int => $line->amount, $data->lines)),
                 'currency' => $data->currency,
-                'issued_at' => now(),
+                'issued_at' => $issuedAt,
             ]);
         });
 

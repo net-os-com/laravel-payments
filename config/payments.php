@@ -29,11 +29,12 @@ return [
     ],
 
     /*
-    | The local drivers: invoices numbered {prefix}-{year}-0001, and VAT from the payment_tax_rates table of this
-    | country.
+    | The local drivers: invoices and credit notes numbered {prefix}-{year}-0001, and VAT from the payment_tax_rates
+    | table of this country.
     */
     'local' => [
         'invoice_number_prefix' => env('PAYMENTS_INVOICE_PREFIX', 'INV'),
+        'credit_note_number_prefix' => env('PAYMENTS_CREDIT_NOTE_PREFIX', 'CN'),
         'tax_country' => env('PAYMENTS_TAX_COUNTRY', 'nl'),
     ],
 ];
