@@ -3,6 +3,7 @@
 namespace NetOS\Payments\Http\Controllers;
 
 use Illuminate\Http\Request;
+use Illuminate\Database\UniqueConstraintViolationException;
 use Illuminate\Http\Response;
 use NetOS\Payments\Enums\Provider;
 use NetOS\Payments\Facades\Payments;
@@ -23,13 +24,21 @@ class WebhookController
             abort(400);
         }
 
-        $event = PaymentWebhookEvent::query()->firstOrCreate(
-            ['provider' => $data->provider, 'provider_event_id' => $data->providerEventId],
-            ['type' => $data->type, 'provider_account_id' => $data->providerAccountId, 'payload' => $data->payload],
-        );
+        $keys = ['provider' => $data->provider, 'provider_event_id' => $data->providerEventId];
 
-        // A duplicate delivery is acknowledged without being processed again.
-        if ($event->wasRecentlyCreated) {
+        try {
+            $event = PaymentWebhookEvent::query()->firstOrCreate(
+                $keys,
+                ['type' => $data->type, 'provider_account_id' => $data->providerAccountId, 'payload' => $data->payload],
+            );
+        } catch (UniqueConstraintViolationException) {
+            // Two deliveries of the same event at once: the other request stored it.
+            $event = PaymentWebhookEvent::query()->where($keys)->firstOrFail();
+        }
+
+        // A redelivery of an event that was never processed (e.g. the dispatch failed) is queued again; the job is
+        // unique per event and skips processed ones, so duplicates do no harm.
+        if ($event->processed_at === null) {
             ProcessWebhookEventJob::dispatch($event->id);
         }
 

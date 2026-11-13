@@ -7,6 +7,7 @@ use NetOS\Payments\Contracts\TranslatesWebhooks;
 use NetOS\Payments\Data\ProviderEventData;
 use NetOS\Payments\Enums\Provider;
 use Stripe\Webhook;
+use UnexpectedValueException;
 use Stripe\WebhookSignature;
 
 /**
@@ -24,7 +25,12 @@ class StripeWebhookDriver implements TranslatesWebhooks
     {
         $payload = $request->getContent();
         $signature = (string) $request->header('Stripe-Signature');
-        $decoded = json_decode($payload, true, flags: JSON_THROW_ON_ERROR);
+        $decoded = json_decode($payload, true);
+
+        // A body that is not a JSON object can not be a signed Stripe event.
+        if (! is_array($decoded)) {
+            throw new UnexpectedValueException('The webhook body is not valid JSON.');
+        }
 
         if (($decoded['object'] ?? null) === 'v2.core.event') {
             WebhookSignature::verifyHeader($payload, $signature, (string) $this->thinSecret, Webhook::DEFAULT_TOLERANCE);

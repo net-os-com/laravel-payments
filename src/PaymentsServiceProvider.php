@@ -3,6 +3,7 @@
 namespace NetOS\Payments;
 
 use Illuminate\Support\ServiceProvider;
+use NetOS\Payments\Console\RetryWebhookEventsCommand;
 use Stripe\StripeClient;
 
 class PaymentsServiceProvider extends ServiceProvider
@@ -26,6 +27,11 @@ class PaymentsServiceProvider extends ServiceProvider
         $this->loadViewsFrom(__DIR__ . '/../resources/views', 'payments');
 
         $this->publishes([__DIR__ . '/../config/payments.php' => config_path('payments.php')], 'payments-config');
+        $this->publishes([__DIR__ . '/../database/migrations' => database_path('migrations')], 'payments-migrations');
+
+        if ($this->app->runningInConsole()) {
+            $this->commands([RetryWebhookEventsCommand::class]);
+        }
         $this->publishes([__DIR__ . '/../resources/views' => resource_path('views/vendor/payments')], 'payments-views');
     }
 }
