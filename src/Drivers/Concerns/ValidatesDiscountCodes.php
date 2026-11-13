@@ -19,6 +19,11 @@ trait ValidatesDiscountCodes
         $discountCode = PaymentDiscountCode::query()
             ->whereCode($code)
             ->where('source', $context->sources->discounts)
+            // A Stripe code only works on the account it was created on.
+            ->when(
+                $context->sources->discounts === CapabilitySource::STRIPE,
+                fn ($query) => $query->where('provider_account_id', $context->providerAccountId),
+            )
             ->first();
 
         if ($discountCode === null) {

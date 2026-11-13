@@ -12,6 +12,7 @@ use NetOS\Payments\Enums\Provider;
 use NetOS\Payments\Models\PaymentDiscountCode;
 use NetOS\Payments\PaymentContext;
 use Stripe\StripeClient;
+use Throwable;
 
 /**
  * A coupon with a promotion code on the connected account, mirrored locally. The coupon holds the percentage; the
@@ -47,13 +48,20 @@ class StripeDiscountCodeDriver implements ManagesDiscountCodes
             'metadata' => $data->metadata,
         ], fn (mixed $value): bool => $value !== null), $options);
 
-        $promotionCode = $this->stripe->promotionCodes->create(array_filter([
-            'promotion' => ['type' => 'coupon', 'coupon' => $coupon->id],
-            'code' => $code,
-            'max_redemptions' => $data->type === DiscountCodeType::ONE_TIME ? 1 : null,
-            'expires_at' => $expiresAt,
-            'metadata' => $data->metadata,
-        ], fn (mixed $value): bool => $value !== null), $options);
+        try {
+            $promotionCode = $this->stripe->promotionCodes->create(array_filter([
+                'promotion' => ['type' => 'coupon', 'coupon' => $coupon->id],
+                'code' => $code,
+                'max_redemptions' => $data->type === DiscountCodeType::ONE_TIME ? 1 : null,
+                'expires_at' => $expiresAt,
+                'metadata' => $data->metadata,
+            ], fn (mixed $value): bool => $value !== null), $options);
+        } catch (Throwable $exception) {
+            // Without its promotion code the coupon is unusable; remove it so no orphan is left at Stripe.
+            rescue(fn () => $this->stripe->coupons->delete($coupon->id, [], $options), report: false);
+
+            throw $exception;
+        }
 
         return PaymentDiscountCode::query()->create([
             'source' => CapabilitySource::STRIPE,

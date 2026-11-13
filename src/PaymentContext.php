@@ -31,7 +31,8 @@ final readonly class PaymentContext
     ) {}
 
     /**
-     * For calls that only need the account, such as syncing it from a webhook.
+     * For account calls only (accounts, onboarding, syncing from a webhook). Its sources are a fixed placeholder, so
+     * do not use it for invoices, tax or discount codes: resolve the application's context for those.
      */
     public static function forAccount(Provider $provider, ?string $providerAccountId): self
     {

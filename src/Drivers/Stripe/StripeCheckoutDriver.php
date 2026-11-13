@@ -10,6 +10,7 @@ use NetOS\Payments\Data\ProviderCheckoutData;
 use NetOS\Payments\Enums\CapabilitySource;
 use NetOS\Payments\Enums\CheckoutStatus;
 use NetOS\Payments\PaymentContext;
+use InvalidArgumentException;
 use Stripe\Checkout\Session;
 use Stripe\StripeClient;
 
@@ -19,6 +20,10 @@ use Stripe\StripeClient;
  */
 class StripeCheckoutDriver implements ProcessesCheckouts
 {
+    private const int MIN_EXPIRY_MINUTES = 30;
+
+    private const int MAX_EXPIRY_MINUTES = 24 * 60;
+
     public function __construct(
         private readonly StripeClient $stripe,
         private readonly StripeTaxRates $taxRates,
@@ -31,6 +36,8 @@ class StripeCheckoutDriver implements ProcessesCheckouts
         $isStripeInvoicing = $sources->invoicing === CapabilitySource::STRIPE;
         $isStripeTax = $sources->tax === CapabilitySource::STRIPE;
         $isStripeDiscounts = $sources->discounts === CapabilitySource::STRIPE;
+
+        $this->assertValid($data, $isStripeTax);
 
         $params = [
             'mode' => 'payment',
@@ -79,16 +86,34 @@ class StripeCheckoutDriver implements ProcessesCheckouts
             ];
         }
 
-        // A code the customer typed in the application is applied here; without one, Stripe's own field is offered.
-        if ($isStripeDiscounts) {
-            if ($data->providerDiscountId === null) {
-                $params['allow_promotion_codes'] = true;
-            } else {
-                $params['discounts'] = [['promotion_code' => $data->providerDiscountId]];
-            }
+        // A code the customer typed in the application, which checked its start date, is applied here. Stripe's own
+        // code field is never offered: Stripe promotion codes have no start date, so it would accept scheduled codes.
+        if ($isStripeDiscounts && $data->providerDiscountId !== null) {
+            $params['discounts'] = [['promotion_code' => $data->providerDiscountId]];
         }
 
         return $this->toData($this->stripe->checkout->sessions->create($params, ['stripe_account' => $accountId]));
+    }
+
+    /**
+     * Stripe only accepts an expiry 30 minutes to 24 hours ahead, and a line without a rate under the application's tax
+     * would silently be charged without VAT.
+     */
+    private function assertValid(CreateCheckoutData $data, bool $isStripeTax): void
+    {
+        $minutesAhead = now()->diffInMinutes($data->expiresAt, false);
+
+        if ($minutesAhead < self::MIN_EXPIRY_MINUTES || $minutesAhead > self::MAX_EXPIRY_MINUTES) {
+            throw new InvalidArgumentException('A Stripe checkout must expire between 30 minutes and 24 hours from now.');
+        }
+
+        if (! $isStripeTax) {
+            foreach ($data->lineItems as $item) {
+                if ($item->taxPercentage === null) {
+                    throw new InvalidArgumentException(sprintf('Line "%s" has no tax percentage.', $item->description));
+                }
+            }
+        }
     }
 
     public function fetch(PaymentContext $context, string $providerCheckoutId): ProviderCheckoutData

@@ -125,8 +125,9 @@ class StripeAccountDriver implements ManagesAccounts
 
     public function dashboardUrl(PaymentContext $context): string
     {
-        // The account holder signs in to their own dashboard; test accounts open its test mode.
-        return str_starts_with($this->stripe->getApiKey() ?? '', 'sk_test_')
+        // The account holder signs in to their own dashboard; test accounts open its test mode. Secret and restricted
+        // test keys both count.
+        return preg_match('/^(sk|rk)_test_/', $this->stripe->getApiKey() ?? '') === 1
             ? 'https://dashboard.stripe.com/test/dashboard'
             : 'https://dashboard.stripe.com/dashboard';
     }
@@ -161,20 +162,27 @@ class StripeAccountDriver implements ManagesAccounts
         ]);
     }
 
+    /**
+     * Only local files are read: a URL or stream wrapper here would let the server fetch arbitrary locations.
+     */
     private function uploadLogo(string $path): string
     {
-        $contents = file_get_contents($path);
+        if (preg_match('#^[a-z][a-z0-9+.-]*://#i', $path) === 1 || ! is_file($path) || ! is_readable($path)) {
+            throw new RuntimeException('The logo must be a readable local file.');
+        }
 
-        if ($contents === false) {
+        $file = fopen($path, 'rb');
+
+        if ($file === false) {
             throw new RuntimeException('The logo could not be read.');
         }
 
-        $file = tmpfile();
-        fwrite($file, $contents);
-        rewind($file);
-
-        // Accounts v2 is called as the platform, so the file belongs to the platform, not the connected account.
-        return $this->stripe->files->create(['purpose' => 'business_logo', 'file' => $file])->id;
+        try {
+            // Accounts v2 is called as the platform, so the file belongs to the platform, not the connected account.
+            return $this->stripe->files->create(['purpose' => 'business_logo', 'file' => $file])->id;
+        } finally {
+            fclose($file);
+        }
     }
 
     private function toData(Account $account): ProviderAccountData
@@ -185,7 +193,7 @@ class StripeAccountDriver implements ManagesAccounts
 
         $requirementsDue = collect($account->requirements?->entries ?? [])
             ->filter(fn ($entry): bool => $entry->awaiting_action_from === 'user'
-                && in_array($entry->minimum_deadline->status, ['currently_due', 'past_due'], true))
+                && in_array($entry->minimum_deadline?->status, ['currently_due', 'past_due'], true))
             ->map(fn ($entry): string => $entry->description)
             ->values()
             ->all();

@@ -6,7 +6,7 @@ use Spatie\LaravelData\Data;
 
 /**
  * What the platform sets on a new account. Support details and the statement descriptor can only be set before the
- * account holder completes onboarding; branding, locales and the display name stay writable.
+ * account holder completes onboarding; branding and locales stay writable (updateBranding(), updateLocales()).
  */
 class AccountDefaultsData extends Data
 {
