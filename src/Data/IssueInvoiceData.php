@@ -19,5 +19,7 @@ class IssueInvoiceData extends Data
         public string $currency,
         /** What the invoice is for in the application, e.g. a payment uuid. */
         public string $reference,
+        /** Billing details to print for the payer, e.g. taken from the provider's checkout. */
+        public ?CustomerDetailsData $customer = null,
     ) {}
 }

@@ -22,5 +22,7 @@ class ProviderCheckoutData extends Data
         public ?string $providerInvoiceId,
         public ?string $customerName,
         public array $metadata = [],
+        /** The billing details entered at checkout; null until the customer completed them. */
+        public ?CustomerDetailsData $customer = null,
     ) {}
 }

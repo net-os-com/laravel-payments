@@ -5,6 +5,7 @@ namespace NetOS\Payments\Drivers\Stripe;
 use NetOS\Payments\Contracts\ProcessesCheckouts;
 use NetOS\Payments\Data\CheckoutLineItemData;
 use NetOS\Payments\Data\CreateCheckoutData;
+use NetOS\Payments\Data\CustomerDetailsData;
 use NetOS\Payments\Data\ProviderCheckoutData;
 use NetOS\Payments\Enums\CapabilitySource;
 use NetOS\Payments\Enums\CheckoutStatus;
@@ -56,6 +57,10 @@ class StripeCheckoutDriver implements ProcessesCheckouts
             'cancel_url' => $data->cancelUrl,
             'expires_at' => $data->expiresAt->getTimestamp(),
             'metadata' => $data->metadata,
+            // Asked for every invoicing source, so a local invoice can show the same company details as Stripe's.
+            'customer_creation' => 'always',
+            'billing_address_collection' => 'required',
+            'tax_id_collection' => ['enabled' => true],
         ];
 
         if ($isStripeTax) {
@@ -63,8 +68,6 @@ class StripeCheckoutDriver implements ProcessesCheckouts
         }
 
         if ($isStripeInvoicing) {
-            $params['customer_creation'] = 'always';
-            $params['tax_id_collection'] = ['enabled' => true];
             $params['invoice_creation'] = [
                 'enabled' => true,
                 'invoice_data' => array_filter([
@@ -121,6 +124,32 @@ class StripeCheckoutDriver implements ProcessesCheckouts
             providerInvoiceId: is_string($session->invoice) ? $session->invoice : $session->invoice?->id,
             customerName: $session->customer_details?->name,
             metadata: $session->metadata?->toArray() ?? [],
+            customer: $this->customerDetails($session),
+        );
+    }
+
+    private function customerDetails(Session $session): ?CustomerDetailsData
+    {
+        $details = $session->customer_details;
+
+        if ($details === null) {
+            return null;
+        }
+
+        $address = $details->address;
+        $taxId = $details->tax_ids[0] ?? null;
+
+        return new CustomerDetailsData(
+            name: $details->name,
+            email: $details->email,
+            companyName: $details->business_name ?? null,
+            addressLine1: $address?->line1,
+            addressLine2: $address?->line2,
+            postalCode: $address?->postal_code,
+            city: $address?->city,
+            country: $address?->country,
+            taxIdType: $taxId?->type,
+            taxIdValue: $taxId?->value,
         );
     }
 }
