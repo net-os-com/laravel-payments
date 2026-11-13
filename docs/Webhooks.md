@@ -126,8 +126,49 @@ flowchart TD
 | --- | --- | --- |
 | `PaymentCheckoutUpdated` | Every `checkout.session.*` event from a connected account | `Provider $provider`, `string $providerAccountId`, `string $providerCheckoutId` |
 | `PaymentAccountUpdated` | Every `SyncPaymentAccountAction` run (from webhooks and from the app) | `PaymentAccount $account` |
+| `PaymentInvoiceIssued` | A document the app has to deliver itself is ready: a local invoice or credit note once `RenderInvoicePdfJob` stored its PDF, or a Stripe credit note right after `StripeInvoiceDriver::creditNote()` created it | `InvoiceData $document`, `string $reference`, `?string $payerEmail`, `?string $pdfDisk = null`, `?string $pdfPath = null` |
 
 `PaymentCheckoutUpdated` deliberately carries ids only: the package does not know what was paid for. The listener fetches the checkout (`Payments::checkouts($ctx)->fetch(...)`) and updates the app's own records.
+
+### PaymentInvoiceIssued
+
+`NetOS\Payments\Events\PaymentInvoiceIssued` is not a webhook event: the invoice drivers dispatch it. The package sends no mail; the app listens to it and sends the document to the payer.
+
+| Property | Local invoice or credit note | Stripe credit note |
+| --- | --- | --- |
+| `document` | `InvoiceData` with signed `hostedUrl` and `pdfUrl`; `type` is `invoice` or `credit_note` | `InvoiceData` with `type = credit_note`, `pdfUrl` = Stripe's credit note PDF, `hostedUrl = null` |
+| `reference` | the row's `reference` (what the document is for in the app) | the invoice's `metadata['payment_uuid']`, or the invoice id when missing |
+| `payerEmail` | the row's `payer_email` | the invoice's `customer_email` |
+| `pdfDisk`, `pdfPath` | where the PDF is stored, to attach it | `null` |
+| Dispatched from | `RenderInvoicePdfJob`, on `payments.queue` | `creditNote()`, wherever the app calls it |
+
+`RenderInvoicePdfJob` does not initialize tenancy itself: it reads `payment_invoices` on `payments.connections.tenant` in whatever context the queue worker runs it (with stancl/tenancy, the context its queue bootstrapper restores). A listener of the event runs in that same context.
+
+Stripe invoices do not fire it: Stripe emails them itself, depending on the account's email settings. See [Invoices](Invoices.md#delivery).
+
+```php
+use Illuminate\Support\Facades\Mail;
+use NetOS\Payments\Events\PaymentInvoiceIssued;
+
+class SendInvoiceMailOnInvoiceIssued
+{
+    public function handle(PaymentInvoiceIssued $event): void
+    {
+        if ($event->payerEmail === null) {
+            return;
+        }
+
+        Mail::to($event->payerEmail)->queue(new InvoiceMail(
+            number: $event->document->number,
+            isCreditNote: $event->document->type === 'credit_note',
+            hostedUrl: $event->document->hostedUrl,
+            pdfUrl: $event->document->pdfUrl,
+            pdfDisk: $event->pdfDisk,   // attach with Attachment::fromStorageDisk($pdfDisk, $pdfPath) when set
+            pdfPath: $event->pdfPath,
+        ));
+    }
+}
+```
 
 ### Tenancy in listeners
 

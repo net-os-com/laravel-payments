@@ -14,8 +14,10 @@
 | Enums | `NetOS\Payments\Enums\*` | Provider, sources, profiles, statuses, code types. |
 | Models | `NetOS\Payments\Models\*` | Eloquent models of the package's tables, on the central or tenant connection. |
 | Webhooks | `Http\Controllers\WebhookController`, `Jobs\ProcessWebhookEventJob` | Receive, store and process provider events. |
+| Documents | `Http\Controllers\DocumentController`, `Jobs\RenderInvoicePdfJob`, view `payments::invoices.document` | Render local invoices and credit notes to PDF and serve them on signed routes. |
+| Support | `NetOS\Payments\Support\DocumentNumberer`, `NetOS\Payments\Support\LocalDocumentPresenter` | Gapless numbering per series and year; a local document as `InvoiceData` with signed links. |
 | Actions | `NetOS\Payments\Actions\SyncPaymentAccountAction` | Copies the provider's account state to `payment_accounts`. |
-| Events | `NetOS\Payments\Events\*` | `PaymentCheckoutUpdated`, `PaymentAccountUpdated` for the host app. |
+| Events | `NetOS\Payments\Events\*` | `PaymentCheckoutUpdated`, `PaymentAccountUpdated`, `PaymentInvoiceIssued` for the host app. |
 | Exceptions | `NetOS\Payments\Exceptions\*` | `AccountNotConnectedException`, `HandledByCheckoutException`. |
 
 ## The entry point
@@ -35,7 +37,7 @@ class Payments
 }
 ```
 
-The context is used twice: once to pick the driver, and again as the first argument of every driver method. The driver uses it for the account id, the sources (the checkout driver reads all three) and the issuer.
+The context is used twice: once to pick the driver, and again as the first argument of every driver method. The driver uses it for the account id, the sources (the checkout driver reads all three), the issuer and the `urlParameters` of signed document links.
 
 ## One manager per capability
 
@@ -44,7 +46,7 @@ The context is used twice: once to pick the driver, and again as the first argum
 | `AccountManager` | `stripe` | `stripe` → `StripeAccountDriver` | `StripeClient`, `payments.stripe.country`, `payments.stripe.currency` |
 | `CheckoutManager` | `stripe` | `stripe` → `StripeCheckoutDriver` | `StripeClient`, `new StripeTaxRates($stripe, payments.stripe.country)` |
 | `RefundManager` | `stripe` | `stripe` → `StripeRefundDriver` | `StripeClient` |
-| `InvoiceManager` | `stripe` | `stripe` → `StripeInvoiceDriver`, `local` → `LocalInvoiceDriver` | `StripeClient`; `payments.local.invoice_number_prefix` |
+| `InvoiceManager` | `stripe` | `stripe` → `StripeInvoiceDriver`, `local` → `LocalInvoiceDriver` | `StripeClient`; `DocumentNumberer`, `LocalDocumentPresenter`, `payments.local.invoice_number_prefix`, `payments.local.credit_note_number_prefix` |
 | `TaxManager` | `stripe` | `stripe` → `StripeTaxDriver`, `local` → `LocalTaxDriver` | none; `payments.local.tax_country` |
 | `DiscountCodeManager` | `stripe` | `stripe` → `StripeDiscountCodeDriver`, `local` → `LocalDiscountCodeDriver` | `StripeClient`; none |
 | `WebhookManager` | `stripe` | `stripe` → `StripeWebhookDriver` | `payments.stripe.webhook_secrets.snapshot`, `.thin` |
@@ -84,9 +86,11 @@ The sources are read in two places:
 
 | Source | `stripe` | `local` |
 | --- | --- | --- |
-| Invoicing | `invoice_creation.enabled`, `customer_creation: always`, `tax_id_collection.enabled` | No invoice in Checkout; the app issues one later with `LocalInvoiceDriver`. |
+| Invoicing | `invoice_creation.enabled` | No invoice in Checkout; the app issues one later with `LocalInvoiceDriver`. |
 | Tax | `automatic_tax.enabled` (Stripe Tax) | Each line item with a `taxPercentage` gets an inclusive Stripe tax rate. |
 | Discounts | The given promotion code in `discounts`, or `allow_promotion_codes` when none is given | Nothing; the app sends already-lowered line items. |
+
+Whatever the sources, every session sets `customer_creation: always`, `billing_address_collection: required` and `tax_id_collection.enabled`, so `ProviderCheckoutData::$customer` holds the customer's billing details for either invoicing source.
 
 The drivers of invoices, tax and discounts report this with `isHandledByCheckout()`. The app uses that to decide whether to do the work itself.
 
@@ -107,10 +111,12 @@ sequenceDiagram
     participant Stripe
     participant WH as WebhookController
     participant Job as ProcessWebhookEventJob
+    participant Pdf as RenderInvoicePdfJob
 
-    App->>Pkg: discounts(ctx)->validate(ctx, code)
+    App->>Pkg: discounts(ctx)->validate(ctx, code, reference)
     App->>Pkg: tax(ctx)->calculate(ctx, lines) (local tax only)
     App->>Pkg: checkouts(ctx)->create(ctx, CreateCheckoutData)
+    App->>Pkg: discounts(ctx)->reserve(ctx, code, reference, expiresAt)
     Pkg->>Stripe: checkout.sessions.create (stripe_account)
     Stripe-->>Pkg: Session
     Pkg-->>App: ProviderCheckoutData (url)
@@ -122,13 +128,18 @@ sequenceDiagram
     WH->>Job: dispatch (payments queue)
     Job->>App: PaymentCheckoutUpdated
     App->>Pkg: checkouts(ctx)->fetch(ctx, id)
-    App->>Pkg: discounts(ctx)->redeem(ctx, code)
+    App->>Pkg: discounts(ctx)->redeem(ctx, code) (ends the hold)
     alt invoicing = stripe
         App->>Pkg: invoices(ctx)->find(ctx, providerInvoiceId)
     else invoicing = local
         App->>Pkg: invoices(ctx)->issue(ctx, IssueInvoiceData)
+        Pkg->>Pdf: dispatch (payments queue)
+        Pdf->>App: PaymentInvoiceIssued
+        App-->>Customer: mail with the invoice
     end
 ```
+
+When the checkout expires instead, the app calls `discounts(ctx)->release(ctx, code, reference)`.
 
 ### Account updates
 
@@ -156,6 +167,7 @@ sequenceDiagram
 - Drivers keep no per-merchant state. `PaymentContext` is a `final readonly` class.
 - `StripeTaxRates` has no cache; it lists the account's tax rates on every call.
 - `LocalTaxDriver::calculate()` caches rates per category only inside one call.
+- `DocumentNumberer` and `LocalDocumentPresenter` hold no state; `RenderInvoicePdfJob` receives the document id and the context's `urlParameters`.
 - The `StripeClient` singleton holds only the platform secret.
 
 This is what makes the package safe to use from Octane workers and queue workers that serve many tenants.
@@ -165,24 +177,28 @@ This is what makes the package safe to use from Octane workers and queue workers
 ```
 config/payments.php
 database/migrations/                    central: payment_accounts, payment_webhook_events
-database/migrations/tenant/             tenant: payment_discount_codes, payment_tax_rates, payment_invoices
+database/migrations/tenant/             tenant: payment_discount_codes, payment_tax_rates, payment_invoices,
+                                        payment_document_sequences (+ document and reservation columns)
+resources/views/invoices/document.blade.php   invoice and credit note (page and PDF)
 routes/webhooks.php                     POST {webhook_path}/{provider}
+routes/documents.php                    GET {documents_prefix}/{document}, GET {documents_prefix}/{document}/pdf
 src/
   Actions/SyncPaymentAccountAction.php
   Contracts/                            9 interfaces
-  Data/                                 18 DTOs
+  Data/                                 19 DTOs
   Drivers/Concerns/ValidatesDiscountCodes.php
   Drivers/Local/                        invoices, tax, discount codes
   Drivers/Stripe/                       accounts, checkout, discounts, invoices, refunds, tax, tax rates, webhooks
   Enums/                                7 enums
-  Events/                               2 events
+  Events/                               3 events
   Exceptions/                           2 exceptions
   Facades/Payments.php
-  Http/Controllers/WebhookController.php
-  Jobs/ProcessWebhookEventJob.php
+  Http/Controllers/                     WebhookController, DocumentController
+  Jobs/                                 ProcessWebhookEventJob, RenderInvoicePdfJob
   Managers/                             7 managers
-  Models/                               5 models + UsesTenantConnection
+  Models/                               6 models + UsesTenantConnection
   PaymentContext.php
   Payments.php
   PaymentsServiceProvider.php
+  Support/                              DocumentNumberer, LocalDocumentPresenter
 ```

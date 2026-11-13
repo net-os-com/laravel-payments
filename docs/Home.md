@@ -3,7 +3,7 @@
 `net-os/laravel-payments` is a PSP-agnostic layer for payments, invoices, tax and discount codes in multi-tenant Laravel apps. Stripe Connect is the first provider. Net OS is the reference host app.
 
 > [!WARNING]
-> Proof of concept. No automated tests, several skeleton drivers, and the API, config and schema may change. Read [Security and Limitations](Security-and-Limitations.md) before using it.
+> Proof of concept. No automated tests, not every capability has both drivers, and the API, config and schema may change. Read [Security and Limitations](Security-and-Limitations.md) before using it.
 
 ## Pages
 
@@ -15,8 +15,8 @@
 | [Accounts and Onboarding](Accounts-and-Onboarding.md) | Stripe Connect Accounts v2, account links, refresh and return, defaults and branding, account status and sync. |
 | [Checkout](Checkout.md) | `CreateCheckoutData`, line items, tax and discounts per source, invoices in Checkout, expiry, statuses. |
 | [Tax](Tax.md) | Stripe Tax vs the local rate table, inclusive tax rates on Stripe. |
-| [Discount Codes](Discount-Codes.md) | Promotion codes and coupons vs local codes, validation, statuses, redemption. |
-| [Invoices](Invoices.md) | Stripe invoices created in Checkout vs local invoices, numbering, credits. |
+| [Discount Codes](Discount-Codes.md) | Promotion codes and coupons vs local codes, validation, statuses, reservations, redemption. |
+| [Invoices](Invoices.md) | Stripe invoices created in Checkout vs local invoices, numbering, credit notes, PDF and signed links, delivery. |
 | [Refunds](Refunds.md) | Refunding a direct charge, credits on local invoices. |
 | [Webhooks](Webhooks.md) | Route, signature verification, storage, job, events, Stripe event destinations, Stripe CLI. |
 | [Data Model](Data-Model.md) | Every table and column, central vs tenant, models and casts. |

@@ -52,6 +52,10 @@ $params = [
     'customer_email' => ...,
     'payment_intent_data' => ['description' => ..., 'metadata' => ..., 'receipt_email' => ...],
     'success_url' => ..., 'cancel_url' => ..., 'expires_at' => ..., 'metadata' => ...,
+    // Always, so a local invoice can show the same company details as Stripe's:
+    'customer_creation' => 'always',
+    'billing_address_collection' => 'required',
+    'tax_id_collection' => ['enabled' => true],
 ];
 ```
 
@@ -59,7 +63,7 @@ $params = [
 | --- | --- | --- |
 | Tax | `stripe` | `automatic_tax: { enabled: true }` |
 | Tax | `local` | Per line with a `taxPercentage`: `tax_rates: [StripeTaxRates::inclusive($accountId, $percentage)]`. Lines without one get no tax rate. |
-| Invoicing | `stripe` | `customer_creation: always`, `tax_id_collection: { enabled: true }`, `invoice_creation: { enabled: true, invoice_data: { description, footer, metadata, rendering_options: { amount_tax_display: include_inclusive_tax } } }` (empty values filtered) |
+| Invoicing | `stripe` | `invoice_creation: { enabled: true, invoice_data: { description, footer, metadata, rendering_options: { amount_tax_display: include_inclusive_tax } } }` (empty values filtered) |
 | Invoicing | `local` | nothing |
 | Discounts | `stripe`, `providerDiscountId` given | `discounts: [{ promotion_code: providerDiscountId }]` |
 | Discounts | `stripe`, no `providerDiscountId` | `allow_promotion_codes: true` (Stripe shows its own code field) |
@@ -122,6 +126,7 @@ Returned by `create()`, `fetch()` and `expire()`.
 | `providerInvoiceId` | `?string` | `invoice` id (`in_...`), only with Stripe invoicing |
 | `customerName` | `?string` | `customer_details.name` |
 | `metadata` | `array<string, string>` | `session.metadata` |
+| `customer` | `?CustomerDetailsData` | `customer_details` (name, email, `business_name`, address, first tax id); `null` while the session has none. See [Invoices](Invoices.md#customer-details). |
 
 ### Status mapping
 

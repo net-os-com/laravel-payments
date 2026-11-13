@@ -5,7 +5,7 @@
 Stripe Connect is the first (and currently only) provider. The package is extracted from Net OS, a workplace management platform, which is its reference host app.
 
 > [!WARNING]
-> **Status: proof of concept.** The package was built for a pay-as-you-go spike. It has **no automated tests yet**, several drivers are skeletons (see the [support matrix](#driver-support-matrix)), and the public API, config keys and database schema **may change without notice**. Do not use it in production without reviewing the [known limitations](#known-limitations).
+> **Status: proof of concept.** The package was built for a pay-as-you-go spike. It has **no automated tests yet**, not every capability has both drivers (see the [support matrix](#driver-support-matrix)), and the public API, config keys and database schema **may change without notice**. Do not use it in production without reviewing the [known limitations](#known-limitations).
 
 ## Contents
 
@@ -44,7 +44,8 @@ Drivers keep no state: every call receives a `PaymentContext` that says whose mo
 | `spatie/laravel-data` | `^4.0` |
 | `lorisleiva/laravel-actions` | `^2.8` |
 | `stripe/stripe-php` | `^22.1` (Accounts v2 and thin events) |
-| A queue worker | Processes inbound webhooks on the `payments` queue (configurable) |
+| `spatie/laravel-pdf` | `^2.0`, with a configured driver (e.g. Cloudflare), to render local invoices and credit notes |
+| A queue worker | Processes inbound webhooks and renders local document PDFs on the `payments` queue (configurable) |
 | Stripe | A platform account with Connect enabled |
 
 Multi-tenancy is optional. The package was built for [`stancl/tenancy`](https://tenancyforlaravel.com) with a database per tenant, but it only knows about two database connections (`central` and `tenant`), which can both be the default connection in a single-database app.
@@ -84,15 +85,18 @@ The service provider:
 - binds `NetOS\Payments\Payments` as a singleton (the facade's root);
 - binds `Stripe\StripeClient` as a singleton, built with `payments.stripe.secret`;
 - loads the **central** migrations from `database/migrations` (not the `tenant` subdirectory);
-- loads the webhook route `POST {webhook_path}/{provider}`.
+- loads the webhook route `POST {webhook_path}/{provider}`;
+- loads the signed document routes `GET {routes.documents_prefix}/{document}` and `GET {routes.documents_prefix}/{document}/pdf`;
+- registers the views under the namespace `payments`.
 
-### 3. Publish the config (optional)
+### 3. Publish the config and views (optional)
 
 ```bash
 php artisan vendor:publish --tag=payments-config
+php artisan vendor:publish --tag=payments-views
 ```
 
-This copies `config/payments.php` to your app. The package has no other publish tags; migrations are loaded from the package, not published.
+`payments-config` copies `config/payments.php` to your app; `payments-views` copies the invoice and credit note view to `resources/views/vendor/payments`. Migrations are loaded from the package, not published.
 
 ### 4. Migrations: central vs tenant
 
@@ -101,7 +105,7 @@ The package has two groups of migrations:
 | Group | Path in the package | Tables | Connection |
 | --- | --- | --- | --- |
 | Central | `database/migrations` | `payment_accounts`, `payment_webhook_events` | `payments.connections.central` |
-| Tenant | `database/migrations/tenant` | `payment_discount_codes`, `payment_tax_rates`, `payment_invoices` | `payments.connections.tenant` |
+| Tenant | `database/migrations/tenant` | `payment_discount_codes`, `payment_tax_rates`, `payment_invoices`, `payment_document_sequences` | `payments.connections.tenant` |
 
 The central migrations are loaded automatically and run with `php artisan migrate`.
 
@@ -134,7 +138,11 @@ The app must bind `ResolvesPaymentContext` and, for local invoicing, `ProvidesIs
 
 ### 6. Run a queue worker for `payments`
 
-Webhooks are stored by the controller and processed by `ProcessWebhookEventJob` on the queue from `payments.queue` (default `payments`). Make sure a worker listens to it, for example `php artisan queue:work --queue=payments,default`.
+Webhooks are stored by the controller and processed by `ProcessWebhookEventJob` on the queue from `payments.queue` (default `payments`). `RenderInvoicePdfJob` renders local invoices and credit notes on the same queue. Make sure a worker listens to it, for example `php artisan queue:work --queue=payments,default`.
+
+### 7. Local invoicing: PDF renderer, disk and mail
+
+For local invoicing, configure `spatie/laravel-pdf` with a driver (`LARAVEL_PDF_DRIVER`, e.g. Cloudflare and its credentials), set `payments.local.invoice_disk` to a disk both web and queue workers reach, add the middleware that restores your app's context to `payments.routes.documents_middleware` (and the matching `PaymentContext::$urlParameters`), and listen to `PaymentInvoiceIssued` to mail documents. See [Invoices](docs/Invoices.md).
 
 ## Configuration reference
 
@@ -144,14 +152,18 @@ All keys live in `config/payments.php`.
 | --- | --- | --- | --- |
 | `connections.central` | `PAYMENTS_CENTRAL_CONNECTION` | `null` | Connection of `PaymentAccount` and `PaymentWebhookEvent` and of the central migrations. `null` means the default connection. |
 | `connections.tenant` | `PAYMENTS_TENANT_CONNECTION` | `null` | Connection of `PaymentDiscountCode`, `PaymentTaxRate` and `PaymentInvoice` and of the tenant migrations. `null` means the default connection, which with stancl/tenancy is the current tenant's database. |
-| `queue` | `PAYMENTS_QUEUE` | `payments` | Queue of `ProcessWebhookEventJob`. |
+| `queue` | `PAYMENTS_QUEUE` | `payments` | Queue of `ProcessWebhookEventJob` and `RenderInvoicePdfJob`. |
 | `webhook_path` | (none) | `payments/webhooks` | Prefix of the webhook route; the route is `POST {webhook_path}/{provider}`. |
+| `routes.documents_prefix` | (none) | `payments/documents` | Prefix of the signed document routes `GET {prefix}/{document}` (`payments.documents.show`) and `GET {prefix}/{document}/pdf` (`payments.documents.pdf`). |
+| `routes.documents_middleware` | (none) | `[]` | Middleware added after `signed` on the document routes, e.g. the tenancy middleware. |
 | `stripe.secret` | `STRIPE_SECRET` | `null` | Secret key of the Stripe **platform** account. |
 | `stripe.webhook_secrets.snapshot` | `STRIPE_WEBHOOK_SECRET` | `null` | Signing secret of the event destination for snapshot (v1) events of connected accounts. |
 | `stripe.webhook_secrets.thin` | `STRIPE_THIN_WEBHOOK_SECRET` | `null` | Signing secret of the event destination for thin (v2) events. |
 | `stripe.country` | `STRIPE_ACCOUNT_COUNTRY` | `nl` | Country of new connected accounts, and country of inclusive tax rates the checkout creates. |
 | `stripe.currency` | `STRIPE_ACCOUNT_CURRENCY` | `eur` | Default currency of new connected accounts. |
-| `local.invoice_number_prefix` | `PAYMENTS_INVOICE_PREFIX` | `INV` | Prefix of local invoice numbers: `{prefix}-{year}-0001`. |
+| `local.invoice_number_prefix` | `PAYMENTS_INVOICE_PREFIX` | `INV` | Series of local invoice numbers: `{prefix}-{year}-0001`. |
+| `local.credit_note_number_prefix` | `PAYMENTS_CREDIT_NOTE_PREFIX` | `CN` | Series of local credit note numbers: `{prefix}-{year}-0001`. |
+| `local.invoice_disk` | `PAYMENTS_INVOICE_DISK` | `local` | Disk the PDFs of local documents are stored on; web and queue workers must both reach it. |
 | `local.tax_country` | `PAYMENTS_TAX_COUNTRY` | `nl` | Country whose rates `LocalTaxDriver` reads from `payment_tax_rates`. |
 
 A published config may contain extra app-specific keys (the reference host app adds `account_defaults`); the package itself does not read them.
@@ -172,6 +184,7 @@ final readonly class PaymentContext
         public ?string $providerAccountId,       // the merchant's account, null before connecting
         public CapabilitySourcesData $sources,   // invoicing, tax, discounts: stripe|local
         public ?IssuerData $issuer = null,       // legal details for local invoices
+        public array $urlParameters = [],        // added to signed document links, e.g. ['tenant' => '...']
     ) {}
 }
 ```
@@ -307,10 +320,15 @@ $checkout = Payments::checkouts($context)->expire($context, $checkoutId);
 
 ```php
 $discounts = Payments::discounts($context);
-$result = $discounts->validate($context, $typedCode);   // DiscountValidationData
+$result = $discounts->validate($context, $typedCode, $payment->uuid);   // DiscountValidationData
 
 if (! $result->isValid) {
     return back()->withErrors(['code' => $result->reason]);
+}
+
+// Hold a one-time code for this checkout until it expires (a no-op for Stripe codes).
+if (! $discounts->reserve($context, $result->discountCode, $payment->uuid, $expiresAt)) {
+    return back()->withErrors(['code' => 'This code is already in use.']);
 }
 
 if ($discounts->isHandledByCheckout()) {
@@ -320,8 +338,11 @@ if ($discounts->isHandledByCheckout()) {
     // Local source: lower the line items yourself by $result->discountCode->percent_off.
 }
 
-// After the checkout is paid:
+// After the checkout is paid (ends the hold):
 $discounts->redeem($context, $result->discountCode);
+
+// When the checkout expires or is cancelled instead:
+$discounts->release($context, $result->discountCode, $payment->uuid);
 ```
 
 Create a code:
@@ -362,7 +383,7 @@ if ($invoices->isHandledByCheckout()) {
     // Stripe source: Stripe created the invoice in Checkout; read it.
     $invoice = $invoices->find($context, $checkout->providerInvoiceId);
 } else {
-    // Local source: issue it yourself after the payment.
+    // Local source: issue it yourself after the payment. The PDF is rendered on the queue.
     $lines = Payments::tax($context)->calculate($context, [
         new TaxableLineData('Desk booking', 2400, 'workspace_rental'),
     ]);
@@ -373,11 +394,15 @@ if ($invoices->isHandledByCheckout()) {
         discountAmount: 0,
         currency: 'eur',
         reference: $payment->uuid,
+        customer: $checkout->customer,   // billing details from Stripe Checkout
     ));
-    // After a refund:
-    $invoices->creditNote($context, $invoice->reference, 2400);
 }
+
+// After a refund, for both sources; returns the credit note (type credit_note).
+$creditNote = $invoices->creditNote($context, $invoice->reference, $refund->amount, $refund->providerRefundId);
 ```
+
+Stripe Checkout always asks for the billing address and tax id (`customer_creation: always`, `billing_address_collection: required`, `tax_id_collection`), and `ProviderCheckoutData::$customer` returns them as `CustomerDetailsData`. A local invoice is numbered gaplessly per series and year (`INV-2026-0001`, credit notes `CN-2026-0001`), served as a hosted page and PDF on signed links, and announced with `PaymentInvoiceIssued` once its PDF is stored. The app mails it.
 
 ## Contracts the host app implements
 
@@ -422,6 +447,7 @@ class TenantPaymentContextResolver implements ResolvesPaymentContext
                 discounts: CapabilitySource::tryFrom($settings['discounts'] ?? '') ?? CapabilitySource::STRIPE,
             ))->assertAllowed(),
             issuer: $this->issuer->issuer(),
+            urlParameters: ['tenant' => (string) $tenant->getTenantKey()],   // read by documents_middleware
         );
     }
 }
@@ -485,8 +511,9 @@ See [Webhooks](docs/Webhooks.md) for the full flow.
 | --- | --- | --- | --- |
 | `NetOS\Payments\Events\PaymentCheckoutUpdated` | `ProcessWebhookEventJob`, for every `checkout.session.*` event of a connected account | `Provider $provider`, `string $providerAccountId`, `string $providerCheckoutId` | Fetch the checkout and update whatever was being paid for (the package does not know that). |
 | `NetOS\Payments\Events\PaymentAccountUpdated` | `SyncPaymentAccountAction`, on every sync (webhook or app-initiated) | `PaymentAccount $account` | React to status changes (e.g. notify the merchant when onboarding completes). |
+| `NetOS\Payments\Events\PaymentInvoiceIssued` | `RenderInvoicePdfJob`, after the PDF of a local invoice or credit note is stored; `StripeInvoiceDriver::creditNote()`, right after it created a Stripe credit note | `InvoiceData $document`, `string $reference`, `?string $payerEmail`, `?string $pdfDisk`, `?string $pdfPath` | Mail the document to the payer. The package sends no mail; Stripe invoices are emailed by Stripe and do not fire it. |
 
-Both events are dispatched synchronously inside the queue job (or wherever the sync runs). Make a listener `ShouldQueue` if it does slow work.
+The events are dispatched synchronously inside the queue job (or wherever the sync or credit note runs). Make a listener `ShouldQueue` if it does slow work.
 
 ```php
 use NetOS\Payments\Events\PaymentCheckoutUpdated;
@@ -513,9 +540,9 @@ class SyncPaymentOnCheckoutUpdated
 | Accounts | **Real.** Accounts v2, merchant configuration, full dashboard; create, retrieve, onboarding link, configuration, branding (incl. logo upload), locales, dashboard URL. | Not available. |
 | Checkouts | **Real.** Stripe Checkout as a direct charge on the connected account; create, fetch, expire. | Not available. |
 | Refunds | **Real.** Full or partial refund of a PaymentIntent. | Not available. |
-| Invoicing | **Partial.** Stripe creates the invoice inside Checkout (`invoice_creation`); `find()` reads it. `issue()` throws `HandledByCheckoutException`; `creditNote()` throws `LogicException` (not part of the POC). | **Skeleton.** Gap-free numbering per year in `payment_invoices`; no PDF, no email, no hosted page; a credit is recorded on the invoice, not as a separate credit note. |
+| Invoicing | **Real.** Stripe creates, renders and emails the invoice inside Checkout (`invoice_creation`); `find()` reads it. `issue()` throws `HandledByCheckoutException`. `creditNote()` creates a Stripe credit note linked to the refund and dispatches `PaymentInvoiceIssued`. | **Real.** Invoices and credit notes as separate documents in `payment_invoices`, numbered without gaps per series and year; PDF rendered with spatie/laravel-pdf on the queue; hosted page and PDF on signed routes; `PaymentInvoiceIssued` for the app to mail. Statuses `issued` → `partially_credited` → `credited`, like Stripe. |
 | Tax | **Real, inside Checkout.** Stripe Tax (`automatic_tax`); `calculate()` throws `HandledByCheckoutException`. The connected account needs tax registrations in Stripe. | **Real.** Inclusive VAT per line from `payment_tax_rates`. Stripe receives the result as inclusive tax rates on the line items. |
-| Discount codes | **Real.** Coupon + promotion code on the connected account, mirrored in `payment_discount_codes`. | **Real.** Codes only in `payment_discount_codes`; the app lowers the line items. |
+| Discount codes | **Real.** Coupon + promotion code on the connected account, mirrored in `payment_discount_codes`. `reserve()` / `release()` are no-ops; Stripe enforces `max_redemptions`. | **Real.** Codes only in `payment_discount_codes`; the app lowers the line items. One-time codes can be reserved for one open checkout. |
 | Webhooks | **Real.** Snapshot and thin events on one route, signature verification. | Not applicable. |
 
 Only `Provider::STRIPE` exists. See [Extending](docs/Extending.md) to add a provider or driver.
@@ -526,8 +553,9 @@ A short list; see [Security notes and known limitations](docs/Security-and-Limit
 
 - No tests. No CI. API may change.
 - Only Stripe. Accounts, checkouts and refunds have no local driver.
-- Local invoices have no PDF, email or credit note document; `credited` is a status on the invoice. Numbering uses a 4-digit sequence per year and orders numbers as strings.
-- Stripe credit notes are not implemented.
+- The package sends no invoice or credit note mail; the app listens to `PaymentInvoiceIssued`.
+- Local document links are signed without expiry. PDFs are rendered by the spatie/laravel-pdf driver you configure (with Cloudflare, the document HTML including the payer's personal data goes to Cloudflare) and stored on `payments.local.invoice_disk` under a path with a random suffix.
+- One-time local codes are only protected against concurrent use when the app calls `reserve()`.
 - Stripe promotion codes have no start date: a scheduled Stripe code is only blocked by the app's own `validate()`, not by Stripe Checkout's code field.
 - Discount code validation is not rate limited by the package; the app must throttle the endpoint that calls `validate()`. Codes need enough entropy.
 - A webhook event that was stored but never processed (for example because dispatching the job failed) is not retried by a redelivery; there is no command to re-dispatch stored events.

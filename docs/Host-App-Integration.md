@@ -19,6 +19,8 @@ The package gives drivers, tables and a webhook pipeline. Everything about *what
 | 9 | Idempotent checkout sync (webhook + return page) | yes | `SyncGuestPaymentAction` |
 | 10 | Listener for `PaymentCheckoutUpdated` | yes | `SyncGuestPaymentOnCheckoutUpdated` |
 | 11 | Invoices per source | yes | `IssueLocalInvoiceAction`, `SyncPaymentInvoiceAction` |
+| 11a | Document routes in the right context, PDF renderer and disk | for local invoicing | `routes.documents_middleware`, `PaymentContext::$urlParameters`, `local.invoice_disk` |
+| 11b | Listener for `PaymentInvoiceIssued` that mails the document | for local invoicing and credit notes | |
 | 12 | Refunds | optional | `RefundPaymentAction` |
 | 13 | Discount code admin + validation | optional | `CreateDiscountCodeAction`, `SetDiscountCodeActiveAction`, `DiscountCodeController` |
 | 14 | Local tax rates | for local tax | a tenant migration inserting `NL / workspace_rental / 21` |
@@ -47,6 +49,26 @@ and adds app-only keys that the package ignores but the app reads:
     'invoice_footer' => 'Workspace booked through Net OS at :operator.',
 ],
 ```
+
+For local documents it sets the document routes' middleware and the PDF disk:
+
+```php
+// Signed links of local invoices and credit notes; the tenant comes from the ?tenant parameter of the link.
+'routes' => [
+    'documents_prefix' => 'payments/documents',
+    'documents_middleware' => [InitializeTenancyByRequestData::class],
+],
+
+'local' => [
+    'invoice_number_prefix' => env('PAYMENTS_INVOICE_PREFIX', 'INV'),
+    'credit_note_number_prefix' => env('PAYMENTS_CREDIT_NOTE_PREFIX', 'CN'),
+    'tax_country' => env('PAYMENTS_TAX_COUNTRY', 'nl'),
+    // The tenant-suffixed bucket, so web and queue pods reach the same PDFs.
+    'invoice_disk' => env('PAYMENTS_INVOICE_DISK', 'gcs'),
+],
+```
+
+The PDF renderer is configured through spatie/laravel-pdf's own settings (`LARAVEL_PDF_DRIVER` and the driver's credentials); see [Configuration](Configuration.md#pdf-rendering).
 
 Tenant migrations are registered in `config/tenancy.php`:
 
@@ -79,12 +101,15 @@ class TenantPaymentContextResolver implements ResolvesPaymentContext
             providerAccountId: $account?->provider_account_id,
             sources: GetPaymentSourcesAction::make()->handle($tenant)->assertAllowed(),
             issuer: $this->issuer->issuer(),
+            // Signed document links carry the tenant, which the tenancy middleware reads from ?tenant.
+            urlParameters: ['tenant' => (string) $tenant->getTenantKey()],
         );
     }
 }
 ```
 
 - The owner of a `PaymentAccount` is the tenant model (`forOwner($tenant)`).
+- `urlParameters` end up in the signed `hostedUrl` and `pdfUrl` of local documents, so the document routes can initialize tenancy (`InitializeTenancyByRequestData` in `payments.routes.documents_middleware`). Because `RenderInvoicePdfJob` and the presenter take them from the context, every context that issues, finds or credits a local document must carry them.
 - Before an account is connected, `providerAccountId` is `null`; code paths that need an account get `AccountNotConnectedException` from the drivers, which the app turns into validation messages.
 - The sources are checked with `assertAllowed()` every time a context is built.
 
@@ -212,6 +237,8 @@ The quote endpoint, the checkout and the local invoice all use it, so they alway
 
 Discount validation in the quote: `Payments::discounts($ctx)->validate($ctx, $code)`; an invalid code returns its `reason` to the guest. Public guest endpoints are throttled with `throttle:60,1`.
 
+To keep a local one-time code from being used by two open checkouts, the package offers `reserve()` (when the checkout is created, until it expires), `release()` (when it expires or is cancelled) and `validate($ctx, $code, $reference)` that ignores the checkout's own hold; `redeem()` ends the hold. See [Discount Codes](Discount-Codes.md#reserving).
+
 ## 7. Creating the checkout
 
 `CreateGuestBookingAction` (abridged):
@@ -304,6 +331,12 @@ Registered through Laravel's listener discovery (`withEvents(discover: [app/List
 - **Local** (`IssueLocalInvoiceAction`): re-prices the stored line items with `PriceLineItemsAction`, maps them to `TaxedLineData`, calls `issue()` with `reference = payment uuid`, and stores `InvoiceData::$reference` in `provider_invoice_id` plus number and status.
 - **Stripe** (`SyncPaymentInvoiceAction`): calls `find()` with the Stripe invoice id until `invoice_number` and `invoice_pdf_url` are set (or always, with `force`).
 
+What the package expects from any host app:
+
+- Pass the checkout's billing details into the local invoice: `IssueInvoiceData::$customer` = `ProviderCheckoutData::$customer`. Stripe Checkout always collects them (billing address and tax id), whatever the invoicing source.
+- Re-read a local invoice with `find()` after `PaymentInvoiceIssued` (or later) to get its `pdfUrl`; `issue()` returns it as `null` because the PDF is rendered on the queue.
+- Listen to `PaymentInvoiceIssued` and mail the document to `$event->payerEmail`: local invoices and credit notes (PDF on `$event->pdfDisk` / `$event->pdfPath`) and Stripe credit notes (`$event->document->pdfUrl` only). The package sends no mail; Stripe still emails its own invoices. See [Invoices](Invoices.md#delivery).
+
 ## 11. Refunds
 
 `RefundPaymentAction` (`POST /payments/refunds`):
@@ -312,12 +345,12 @@ Registered through Laravel's listener discovery (`withEvents(discover: [app/List
 2. `refund()` the whole payment with `ResolvePaymentContextAction`'s context; Stripe errors become validation errors.
 3. Store refund id, amount, time and user; status `refunded`.
 4. Release the desk when the booking has not ended.
-5. Local invoice → `creditNote()` with the refunded amount.
-6. Re-sync the invoice fields (`force: true`).
+5. When the payment has an invoice (`provider_invoice_id`), for both sources: `creditNote()` with the invoice's source (`withInvoicingSource()`), the refunded amount and `$refund->providerRefundId`, so a Stripe credit note is linked to the refund instead of refunding again. The payer receives the credit note by mail through `PaymentInvoiceIssued`; the payment keeps pointing at the invoice itself.
+6. Re-sync the invoice fields (`force: true`); the invoice status becomes `partially_credited` or `credited` for both sources.
 
 ## 12. Discount codes
 
-- `GET /payments/discount-codes` → `Payments::discounts($ctx)->list($ctx)` (all codes of both sources; filtering happens in the UI).
+- `GET /payments/discount-codes` → `Payments::discounts($ctx)->list($ctx)` (the codes of the context's discount source, and for Stripe of the current account).
 - `POST /payments/discount-codes` → `CreateDiscountCodeAction`: validates code format (`[A-Za-z0-9-]`, max 30), uniqueness in `payment_discount_codes.code`, percentage 1–100, `validFrom >= today`, `validUntil >= validFrom`; creates in the tenant's current discount source; `AccountNotConnectedException` and Stripe errors become validation errors; passes `metadata: ['tenant_id' => ...]`.
 - `PUT /payments/discount-codes/{id}` → `UpdateDiscountCodeAction`: toggles active through `setActive()` with the code's own source, then updates name and description locally.
 

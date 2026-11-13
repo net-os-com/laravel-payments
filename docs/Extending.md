@@ -121,9 +121,43 @@ Accounts, checkouts and refunds are picked by provider, not by source, so a "loc
 
 For invoices, tax and discounts, add `create{Source}Driver()` to the manager (or `extend()`), named after the `CapabilitySource` value. If the new source can run inside the provider's checkout, `StripeCheckoutDriver::create()` must learn what to add to the session for it, and `CapabilitySourcesData::problem()` must be updated if the validity rule changes.
 
+## Invoice drivers
+
+`ProvidesInvoices` changed with credit notes as documents:
+
+```php
+public function creditNote(
+    PaymentContext $context,
+    string $invoiceReference,
+    int $amount,
+    ?string $providerRefundId = null,
+): InvoiceData;
+```
+
+- **Return the credit note**, not the invoice: `InvoiceData` with `type = 'credit_note'` and `creditsReference` = the credited invoice's reference.
+- **Cap the amount** at what is left to credit; the local driver throws `InvalidArgumentException` for `$amount <= 0` or more than `total - credited_amount`.
+- **Link, do not refund.** When `$providerRefundId` is given, attach the credit note to that existing refund (Stripe: `refunds: [{refund, amount_refunded}]`) so the provider does not refund a second time. A driver without provider refunds may ignore it, as the local driver does.
+- **Report the shared statuses** for a credited invoice: `partially_credited` while credits are below the total, `credited` once they reach it.
+- **Fill `InvoiceData::$type`** (`invoice` or `credit_note`, default `invoice`) and `$creditsReference` from `find()` too.
+- **Dispatch `PaymentInvoiceIssued`** for every document the host app has to deliver itself (a document the provider does not email), with the payer email and, when the PDF is stored locally, its disk and path.
+- **Accept `IssueInvoiceData::$customer`** (`?CustomerDetailsData`) and print it on the document.
+- **Sign links with `PaymentContext::$urlParameters`** when the driver serves documents from the host app; `LocalDocumentPresenter` does this for `PaymentInvoice` rows.
+
 ## Discount drivers
 
-Reuse `NetOS\Payments\Drivers\Concerns\ValidatesDiscountCodes` for `validate()` and `list()`: it reads `payment_discount_codes` filtered by the context's discount source. Write rows with the right `source` value so they are found.
+Reuse `NetOS\Payments\Drivers\Concerns\ValidatesDiscountCodes` for `validate()` and `list()`: it reads `payment_discount_codes` filtered by the context's discount source, and `list()` also by `provider_account_id` for the `stripe` source. Write rows with the right `source` value so they are found.
+
+`ManagesDiscountCodes` has two methods for holding a one-time code during an open checkout, and `validate()` takes the checkout's reference:
+
+```php
+public function validate(PaymentContext $context, string $code, ?string $reference = null): DiscountValidationData;
+public function reserve(PaymentContext $context, PaymentDiscountCode $discountCode, string $reference, CarbonInterface $until): bool;
+public function release(PaymentContext $context, PaymentDiscountCode $discountCode, string $reference): void;
+```
+
+- `reserve()` returns `false` only when another checkout holds the code. A driver whose provider enforces single use itself can make both methods no-ops (`StripeDiscountCodeDriver` returns `true` and holds nothing).
+- A driver that holds codes in `reserved_reference` / `reserved_until` must claim them atomically (the local driver uses one conditional `UPDATE`), and `redeem()` must clear the hold.
+- `ValidatesDiscountCodes::validate()` reports `DiscountCodeStatus::RESERVED` ("This code is already in use.") unless the hold has the given `$reference`.
 
 ## Testing drivers
 

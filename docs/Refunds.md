@@ -47,8 +47,10 @@ $context = app(ResolvesPaymentContext::class)->current()->withAccount($payment->
 
 | Invoicing source of the payment | What to do after the refund |
 | --- | --- |
-| `stripe` | Nothing in the package; `creditNote()` is not implemented for Stripe and throws `LogicException`. Re-read the invoice with `find()` if you show its status. |
-| `local` | Call `creditNote($context, $invoiceReference, $refund->amount)` to record the credit on the local invoice. |
+| `stripe` | Call `creditNote($context, $invoiceReference, $refund->amount, $refund->providerRefundId)`. It creates a Stripe credit note linked to the refund (so Stripe does not refund again) and dispatches `PaymentInvoiceIssued`, because Stripe does not email credit notes. |
+| `local` | Call `creditNote($context, $invoiceReference, $refund->amount)`. It creates a credit note document with its own number, sets the invoice to `partially_credited` or `credited`, renders the PDF on the queue and then dispatches `PaymentInvoiceIssued`. |
+
+Both return the credit note as `InvoiceData` (`type = credit_note`). The amount may not exceed what is left to credit on the invoice. See [Invoices](Invoices.md#crediting).
 
 ```mermaid
 sequenceDiagram
@@ -58,6 +60,7 @@ sequenceDiagram
     participant Pkg as Payments facade
     participant Stripe
     participant DB as payment_invoices
+    participant Q as RenderInvoicePdfJob
 
     Admin->>App: refund payment
     App->>App: context = current()->withAccount(payment account)<br/>->withInvoicingSource(payment source)
@@ -67,16 +70,23 @@ sequenceDiagram
     Pkg-->>App: ProviderRefundData
     App->>App: store refund id, amount, status
     alt invoice source local
-        App->>Pkg: invoices(ctx)->creditNote(ctx, reference, amount)
-        Pkg->>DB: credited_amount += amount, status credited
+        App->>Pkg: invoices(ctx)->creditNote(ctx, reference, amount, refundId)
+        Pkg->>DB: insert credit note (CN series), update invoice credited_amount + status
+        Pkg-)Q: dispatch after commit
+        Q-->>App: PaymentInvoiceIssued (after the PDF is stored)
     else invoice source stripe
-        App->>Pkg: invoices(ctx)->find(ctx, reference)
+        App->>Pkg: invoices(ctx)->creditNote(ctx, reference, amount, refundId)
+        Pkg->>Stripe: POST credit_notes {invoice, amount, refunds} (Stripe-Account)
+        Pkg-->>App: PaymentInvoiceIssued
     end
+    App->>Pkg: invoices(ctx)->find(ctx, reference)
+    Note over App: invoice status partially_credited or credited
+    Note over App: mail the credit note on PaymentInvoiceIssued
 ```
 
 ## Not included
 
 - No refund records in the package's tables; the app stores what it needs.
 - No local refund driver.
-- No partial-refund bookkeeping beyond what the app stores and `credited_amount` on local invoices.
+- No partial-refund bookkeeping beyond what the app stores, the credit notes and `credited_amount` on local invoices.
 - No discount code un-redeeming: a refunded one-time code stays used.

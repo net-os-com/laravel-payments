@@ -14,6 +14,8 @@ final readonly class PaymentContext
         public ?string $providerAccountId,
         public CapabilitySourcesData $sources,
         public ?IssuerData $issuer = null,
+        /** @var array<string, string> */
+        public array $urlParameters = [],
     ) {}
 }
 ```
@@ -24,14 +26,15 @@ final readonly class PaymentContext
 | `providerAccountId` | `?string` | The merchant's account at the provider (a Stripe `acct_...` id). `null` before an account is connected. |
 | `sources` | `CapabilitySourcesData` | Where invoicing, tax and discount codes run. |
 | `issuer` | `?IssuerData` | The merchant's legal details for local invoices. Required by `LocalInvoiceDriver::issue()`. |
+| `urlParameters` | `array<string, string>` | Extra parameters for links the package signs, e.g. `['tenant' => '...']`, so a document link opens in the right context. Added to the signed `hostedUrl` and `pdfUrl` of local documents and passed to `RenderInvoicePdfJob`. Default `[]`. See [Invoices](Invoices.md#hosted-page-and-pdf). |
 
 ### Methods
 
 | Method | Returns | Use |
 | --- | --- | --- |
-| `static forAccount(Provider $provider, ?string $providerAccountId)` | `self` | A context for account-only calls (syncing, onboarding links, branding). Uses `PaymentProfile::STRIPE_MANAGED->sources()` and no issuer. Do not use it for invoices, tax or discounts. |
-| `withAccount(?string $providerAccountId)` | `self` | Same sources and issuer, another account. Used to act on a payment made on an earlier account. |
-| `withSources(CapabilitySourcesData $sources)` | `self` | Same account and issuer, other sources. |
+| `static forAccount(Provider $provider, ?string $providerAccountId)` | `self` | A context for account-only calls (syncing, onboarding links, branding). Uses `PaymentProfile::STRIPE_MANAGED->sources()`, no issuer and no URL parameters. Do not use it for invoices, tax or discounts. |
+| `withAccount(?string $providerAccountId)` | `self` | Same sources, issuer and URL parameters, another account. Used to act on a payment made on an earlier account. |
+| `withSources(CapabilitySourcesData $sources)` | `self` | Same account, issuer and URL parameters, other sources. |
 | `withDiscountSource(CapabilitySource $source)` | `self` | Only the discount source changed. Used to manage or redeem a code created under a source the merchant no longer uses. |
 | `withInvoicingSource(CapabilitySource $source)` | `self` | Only the invoicing source changed. Used to read or credit an invoice created under an earlier source. |
 | `requireAccount()` | `string` | The account id, or throws `AccountNotConnectedException` ("No payment account is connected."). Every Stripe driver method that calls Stripe on a connected account uses it. |
@@ -125,7 +128,7 @@ The profiles are presets only. Nothing in the package stores a profile; the app 
 
 | | `stripe` | `local` |
 | --- | --- | --- |
-| Invoicing | Stripe creates, numbers, renders and emails the invoice in Checkout. `isHandledByCheckout()` is `true`. The app reads it with `find()`. | The app calls `issue()` after the payment. Numbered in `payment_invoices`. |
+| Invoicing | Stripe creates, numbers, renders and emails the invoice in Checkout. `isHandledByCheckout()` is `true`. The app reads it with `find()`. | The app calls `issue()` after the payment. Numbered in `payment_invoices`, rendered to PDF on the queue, served on signed links; the app mails it on `PaymentInvoiceIssued`. |
 | Tax | Stripe Tax (`automatic_tax`) in Checkout. `isHandledByCheckout()` is `true`; the app cannot know the tax before the checkout. | The app calls `calculate()` before the checkout and passes `taxPercentage` per line item. |
 | Discounts | A Stripe coupon + promotion code, mirrored locally. Applied by Checkout. | A code only in `payment_discount_codes`. The app lowers the line items before the checkout. |
 

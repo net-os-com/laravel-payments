@@ -12,7 +12,13 @@ interface ManagesDiscountCodes
     public function isHandledByCheckout(): bool;
     public function create(PaymentContext $context, CreateDiscountCodeData $data): PaymentDiscountCode;
     public function setActive(PaymentContext $context, PaymentDiscountCode $discountCode, bool $isActive, ?int $actorId = null): PaymentDiscountCode;
-    public function validate(PaymentContext $context, string $code): DiscountValidationData;
+    /** A hold by the checkout with this reference does not count. */
+    public function validate(PaymentContext $context, string $code, ?string $reference = null): DiscountValidationData;
+    /** Holds a one-time code for one open checkout until $until; false when another checkout holds it. */
+    public function reserve(PaymentContext $context, PaymentDiscountCode $discountCode, string $reference, CarbonInterface $until): bool;
+    /** Frees the hold of this checkout, e.g. when it expired or was cancelled. */
+    public function release(PaymentContext $context, PaymentDiscountCode $discountCode, string $reference): void;
+    /** Records that a paid checkout used the code, and ends any hold on it. */
     public function redeem(PaymentContext $context, PaymentDiscountCode $discountCode): PaymentDiscountCode;
     public function list(PaymentContext $context): Collection; // Collection<int, PaymentDiscountCode>
 }
@@ -25,6 +31,7 @@ Picked by `$context->sources->discounts`.
 | `isHandledByCheckout()` | `true`: Checkout applies the code | `false`: the app lowers the line items |
 | Storage | Coupon + promotion code on the connected account, plus a mirror row in `payment_discount_codes` | Only a row in `payment_discount_codes` |
 | `validate()`, `list()` | shared trait `ValidatesDiscountCodes` | shared trait `ValidatesDiscountCodes` |
+| `reserve()`, `release()` | no-op (`reserve()` returns `true`): Stripe enforces `max_redemptions` itself | holds a `ONE_TIME` code in `reserved_reference` / `reserved_until` |
 
 Both drivers write to the same table; the `source` column says which driver owns a row.
 
@@ -101,13 +108,14 @@ A row with `source = local` and no provider columns.
 
 ```php
 $result = Payments::discounts($context)->validate($context, $typedCode);
+$result = Payments::discounts($context)->validate($context, $typedCode, $checkoutReference); // ignore this checkout's own hold
 ```
 
 `ValidatesDiscountCodes::validate()`:
 
 1. Finds the row with `whereCode($code)` (trims and upper-cases the input) **and** `source = $context->sources->discounts`. A code created under another source does not count.
 2. No row: `DiscountValidationData::invalid('This code does not exist.')`.
-3. Otherwise asks the row's computed `status` for a `reason()`. `null` reason: valid.
+3. Otherwise asks the row's computed `status` for a `reason()`. `null` reason: valid. A `RESERVED` code counts as valid when the hold belongs to `$reference` (the checkout that reserved it).
 
 ```php
 class DiscountValidationData extends Data
@@ -130,7 +138,8 @@ It does **not** check `provider_account_id`. A Stripe code created on an earlier
 | 2 | type `ONE_TIME` and `times_redeemed > 0` | `USED` | This code has already been used. |
 | 3 | `valid_until` before today | `EXPIRED` | This code is no longer valid. |
 | 4 | `valid_from` after today | `SCHEDULED` | This code is not valid yet. |
-| 5 | otherwise | `ACTIVE` | `null` (valid) |
+| 5 | type `ONE_TIME` and `reserved_until` in the future (`isReserved()`) | `RESERVED` | This code is already in use. |
+| 6 | otherwise | `ACTIVE` | `null` (valid) |
 
 "Today" is `today()` in the app's timezone.
 
@@ -150,6 +159,29 @@ To enforce start dates strictly with Stripe codes, always validate in the app an
 | `stripe` | Send full prices and `providerDiscountId: $code->provider_discount_id` in `CreateCheckoutData`. Stripe applies the coupon; `ProviderCheckoutData::$amountDiscount` reports the discount. |
 | `local` | Lower the line amounts by `percent_off` before tax and checkout; send `providerDiscountId: null`. Stripe sees no code and reports no discount. |
 
+## Reserving
+
+A `ONE_TIME` code can be held for one open checkout, so two customers cannot both use it:
+
+```php
+$discounts = Payments::discounts($context);
+
+// When the checkout is created, until it expires:
+if (! $discounts->reserve($context, $code, $payment->uuid, $checkoutExpiresAt)) {
+    // Another open checkout holds the code.
+}
+
+// When the checkout expires or is cancelled:
+$discounts->release($context, $code, $payment->uuid);
+```
+
+| Driver | `reserve()` | `release()` |
+| --- | --- | --- |
+| Stripe | Returns `true`; nothing is held. Stripe enforces `max_redemptions` itself. | Does nothing. |
+| Local | `LONG_TERM` codes: returns `true`, nothing is held. `ONE_TIME` codes: one conditional `UPDATE` that sets `reserved_reference` and `reserved_until` only when `times_redeemed = 0` and the code is not held, its hold expired (`reserved_until < now()`) or the hold has the same reference. Returns whether a row was updated, and refreshes the model. | Clears `reserved_reference` and `reserved_until` when the hold has this reference, and refreshes the model. |
+
+Because the local reservation is one conditional update, two checkouts racing for the same code cannot both win. A hold ends by itself when `reserved_until` passes. `PaymentDiscountCode::isReserved(?string $exceptReference = null)` tells whether a `ONE_TIME` code is held by an open checkout other than `$exceptReference`.
+
 ## Redeeming
 
 Call `redeem()` once the checkout is paid:
@@ -162,11 +194,11 @@ Payments::discounts($codeContext)->redeem($codeContext, $code);
 | Driver | `redeem()` |
 | --- | --- |
 | Stripe | Stripe already counted the redemption in Checkout. The driver retrieves the promotion code and copies `times_redeemed` into the row. |
-| Local | `increment('times_redeemed')` on the row. |
+| Local | `increment('times_redeemed')` on the row, and clears `reserved_reference` and `reserved_until`. |
 
 Use the code's own `source` (via `withDiscountSource()`), not the merchant's current one, so a code created before a switch is redeemed by the right driver.
 
-`validate()` and `redeem()` are separate steps. For a local `ONE_TIME` code, two customers can validate it at the same time and both pay; the package does not reserve codes. Stripe enforces `max_redemptions` itself for Stripe codes.
+`validate()` and `redeem()` are separate steps. For a local `ONE_TIME` code, call `reserve()` between them (see [Reserving](#reserving)); without a reservation two customers can validate it at the same time and both pay. Stripe enforces `max_redemptions` itself for Stripe codes.
 
 ## Activating and deactivating
 
@@ -186,7 +218,7 @@ Other fields (`name`, `description`) can be updated directly on the model; for S
 
 ## Listing
 
-`list()` returns **all** rows of `payment_discount_codes` on the tenant connection, newest first, regardless of source or account. Filter in the app if needed.
+`list()` returns the rows of `payment_discount_codes` with `source = $context->sources->discounts`, newest first. For the `stripe` source it also filters on `provider_account_id = $context->providerAccountId`, so codes of an earlier connected account are left out.
 
 ## Security
 
