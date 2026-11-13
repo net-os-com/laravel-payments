@@ -17,5 +17,9 @@ class InvoiceData extends Data
         /** A page where the customer views the invoice. */
         public ?string $hostedUrl,
         public ?string $pdfUrl,
+        /** invoice or credit_note. */
+        public string $type = 'invoice',
+        /** For a credit note: the reference of the invoice it credits. */
+        public ?string $creditsReference = null,
     ) {}
 }

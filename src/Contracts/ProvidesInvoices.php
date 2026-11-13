@@ -18,7 +18,13 @@ interface ProvidesInvoices
     public function find(PaymentContext $context, string $invoiceReference): InvoiceData;
 
     /**
-     * Credits (part of) an invoice, e.g. after a refund.
+     * Credits (part of) an invoice after a refund and returns the credit note. The amount can not exceed what is left
+     * to credit. Pass the provider's refund id so the credit note is linked to that refund instead of refunding again.
      */
-    public function creditNote(PaymentContext $context, string $invoiceReference, int $amount): InvoiceData;
+    public function creditNote(
+        PaymentContext $context,
+        string $invoiceReference,
+        int $amount,
+        ?string $providerRefundId = null,
+    ): InvoiceData;
 }

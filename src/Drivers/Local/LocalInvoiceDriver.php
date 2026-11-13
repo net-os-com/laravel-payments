@@ -11,11 +11,11 @@ use NetOS\Payments\Enums\CapabilitySource;
 use NetOS\Payments\Models\PaymentInvoice;
 use NetOS\Payments\PaymentContext;
 use NetOS\Payments\Support\DocumentNumberer;
+use InvalidArgumentException;
 use RuntimeException;
 
 /**
- * Invoices issued by the application, numbered per year without gaps. Skeleton for the POC: there is no PDF and no
- * email yet, and a credit is recorded on the invoice instead of as a separate credit note.
+ * Invoices and credit notes issued by the application, each series numbered per year without gaps.
  */
 class LocalInvoiceDriver implements ProvidesInvoices
 {
@@ -65,16 +65,92 @@ class LocalInvoiceDriver implements ProvidesInvoices
         return $this->toData(PaymentInvoice::query()->findOrFail($invoiceReference));
     }
 
-    public function creditNote(PaymentContext $context, string $invoiceReference, int $amount): InvoiceData
-    {
-        $invoice = PaymentInvoice::query()->findOrFail($invoiceReference);
-        $invoice->update([
-            'status' => 'credited',
-            'credited_amount' => $invoice->credited_amount + $amount,
-            'credited_at' => now(),
-        ]);
+    public function creditNote(
+        PaymentContext $context,
+        string $invoiceReference,
+        int $amount,
+        ?string $providerRefundId = null,
+    ): InvoiceData {
+        $creditNote = DB::connection(config('payments.connections.tenant'))->transaction(
+            function () use ($invoiceReference, $amount): PaymentInvoice {
+                $invoice = PaymentInvoice::query()->where('type', 'invoice')->lockForUpdate()->findOrFail($invoiceReference);
+                $remaining = $invoice->total - $invoice->credited_amount;
 
-        return $this->toData($invoice);
+                if ($amount <= 0 || $amount > $remaining) {
+                    throw new InvalidArgumentException('Credit exceeds the remaining amount.');
+                }
+
+                $issuedAt = now();
+                $lines = $this->creditLines($invoice, $amount);
+
+                $creditNote = PaymentInvoice::query()->create([
+                    'type' => 'credit_note',
+                    'credits_invoice_id' => $invoice->id,
+                    'number' => $this->numberer->next($this->creditNoteSeries, $issuedAt),
+                    'status' => 'issued',
+                    'reference' => $invoice->reference,
+                    'issuer' => $invoice->issuer,
+                    'payer_name' => $invoice->payer_name,
+                    'payer_email' => $invoice->payer_email,
+                    'payer' => $invoice->payer,
+                    'lines' => $lines,
+                    'discount_amount' => 0,
+                    'tax_amount' => array_sum(array_column($lines, 'taxAmount')),
+                    'total' => $amount,
+                    'currency' => $invoice->currency,
+                    'issued_at' => $issuedAt,
+                ]);
+
+                $creditedAmount = $invoice->credited_amount + $amount;
+                $invoice->update([
+                    'credited_amount' => $creditedAmount,
+                    'credited_at' => $issuedAt,
+                    'status' => $creditedAmount >= $invoice->total ? 'credited' : 'partially_credited',
+                ]);
+
+                return $creditNote;
+            },
+        );
+
+        return $this->toData($creditNote);
+    }
+
+    /**
+     * One line per VAT rate of the invoice, the credited amount split in proportion to those rates' gross amounts.
+     *
+     * @return list<array{description: string, amount: int, taxPercentage: float, taxAmount: int}>
+     */
+    private function creditLines(PaymentInvoice $invoice, int $amount): array
+    {
+        $grossPerRate = [];
+
+        foreach ($invoice->lines as $line) {
+            $rate = (string) (float) $line['taxPercentage'];
+            $grossPerRate[$rate] = ($grossPerRate[$rate] ?? 0) + (int) $line['amount'];
+        }
+
+        $invoiceGross = max(1, array_sum($grossPerRate));
+        $description = sprintf('Refund for invoice %s', $invoice->number);
+        $lines = [];
+        $assigned = 0;
+        $rates = array_keys($grossPerRate);
+
+        foreach ($rates as $index => $rate) {
+            $lineAmount = $index === count($rates) - 1
+                ? $amount - $assigned
+                : (int) round($amount * $grossPerRate[$rate] / $invoiceGross);
+            $assigned += $lineAmount;
+            $percentage = (float) $rate;
+
+            $lines[] = [
+                'description' => $description,
+                'amount' => $lineAmount,
+                'taxPercentage' => $percentage,
+                'taxAmount' => $lineAmount - (int) round($lineAmount * 100 / (100 + $percentage)),
+            ];
+        }
+
+        return $lines;
     }
 
     private function toData(PaymentInvoice $invoice): InvoiceData
@@ -86,6 +162,8 @@ class LocalInvoiceDriver implements ProvidesInvoices
             status: $invoice->status,
             hostedUrl: null,
             pdfUrl: null,
+            type: $invoice->type,
+            creditsReference: $invoice->credits_invoice_id === null ? null : (string) $invoice->credits_invoice_id,
         );
     }
 }
