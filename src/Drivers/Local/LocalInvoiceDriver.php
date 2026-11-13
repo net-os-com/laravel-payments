@@ -122,40 +122,86 @@ class LocalInvoiceDriver implements ProvidesInvoices
     }
 
     /**
-     * One line per VAT rate of the invoice, the credited amount split in proportion to those rates' gross amounts.
+     * One line per VAT rate of the invoice. Crediting what is left mirrors the invoice's remaining amounts and VAT per
+     * rate, so a full credit cancels the VAT to the cent. A partial credit is split over the rates in proportion to
+     * their gross amounts (largest remainder, never negative), with VAT calculated per line.
      *
      * @return list<array{description: string, amount: int, taxPercentage: float, taxAmount: int}>
      */
     private function creditLines(PaymentInvoice $invoice, int $amount): array
     {
         $grossPerRate = [];
+        $taxPerRate = [];
 
         foreach ($invoice->lines as $line) {
             $rate = (string) (float) $line['taxPercentage'];
             $grossPerRate[$rate] = ($grossPerRate[$rate] ?? 0) + (int) $line['amount'];
+            $taxPerRate[$rate] = ($taxPerRate[$rate] ?? 0) + (int) $line['taxAmount'];
         }
 
-        $invoiceGross = max(1, array_sum($grossPerRate));
+        foreach ($invoice->creditNotes()->get() as $earlierCredit) {
+            foreach ($earlierCredit->lines as $line) {
+                $rate = (string) (float) $line['taxPercentage'];
+                $grossPerRate[$rate] = ($grossPerRate[$rate] ?? 0) - (int) $line['amount'];
+                $taxPerRate[$rate] = ($taxPerRate[$rate] ?? 0) - (int) $line['taxAmount'];
+            }
+        }
+
+        $grossPerRate = array_filter($grossPerRate, fn (int $gross): bool => $gross > 0);
+        $remaining = array_sum($grossPerRate);
         $description = sprintf('Refund for invoice %s', $invoice->number);
+        $isFullCredit = $amount === $remaining;
+        $amounts = $isFullCredit ? $grossPerRate : $this->split($amount, $grossPerRate);
         $lines = [];
-        $assigned = 0;
-        $rates = array_keys($grossPerRate);
 
-        foreach ($rates as $index => $rate) {
-            $lineAmount = $index === count($rates) - 1
-                ? $amount - $assigned
-                : (int) round($amount * $grossPerRate[$rate] / $invoiceGross);
-            $assigned += $lineAmount;
+        foreach ($amounts as $rate => $lineAmount) {
+            if ($lineAmount === 0) {
+                continue;
+            }
+
             $percentage = (float) $rate;
-
             $lines[] = [
                 'description' => $description,
                 'amount' => $lineAmount,
                 'taxPercentage' => $percentage,
-                'taxAmount' => $lineAmount - (int) round($lineAmount * 100 / (100 + $percentage)),
+                'taxAmount' => $isFullCredit
+                    ? $taxPerRate[$rate]
+                    : $lineAmount - (int) round($lineAmount * 100 / (100 + $percentage)),
             ];
         }
 
         return $lines;
+    }
+
+    /**
+     * Splits an amount over weights without rounding drift: floor each share, then hand the leftover cents to the
+     * largest remainders.
+     *
+     * @param array<string, int> $weights
+     * @return array<string, int>
+     */
+    private function split(int $amount, array $weights): array
+    {
+        $total = array_sum($weights);
+        $shares = [];
+        $remainders = [];
+
+        foreach ($weights as $key => $weight) {
+            $exact = $amount * $weight / $total;
+            $shares[$key] = (int) floor($exact);
+            $remainders[$key] = $exact - $shares[$key];
+        }
+
+        arsort($remainders);
+
+        foreach (array_keys($remainders) as $key) {
+            if (array_sum($shares) >= $amount) {
+                break;
+            }
+
+            $shares[$key]++;
+        }
+
+        return $shares;
     }
 }

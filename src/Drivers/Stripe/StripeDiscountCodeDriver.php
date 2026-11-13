@@ -103,9 +103,6 @@ class StripeDiscountCodeDriver implements ManagesDiscountCodes
     }
 
     /**
-     * Stripe counts the redemption itself; the mirror copies its count.
-     */
-    /**
      * Stripe enforces max_redemptions itself, so nothing is held.
      */
     public function reserve(PaymentContext $context, PaymentDiscountCode $discountCode, string $reference, CarbonInterface $until): bool
@@ -115,6 +112,9 @@ class StripeDiscountCodeDriver implements ManagesDiscountCodes
 
     public function release(PaymentContext $context, PaymentDiscountCode $discountCode, string $reference): void {}
 
+    /**
+     * Stripe counts the redemption itself; the mirror copies its count.
+     */
     public function redeem(PaymentContext $context, PaymentDiscountCode $discountCode): PaymentDiscountCode
     {
         $promotionCode = $this->stripe->promotionCodes->retrieve(

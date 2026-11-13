@@ -4,6 +4,13 @@ namespace NetOS\Payments;
 
 use Illuminate\Support\ServiceProvider;
 use NetOS\Payments\Console\RetryWebhookEventsCommand;
+use NetOS\Payments\Managers\AccountManager;
+use NetOS\Payments\Managers\CheckoutManager;
+use NetOS\Payments\Managers\DiscountCodeManager;
+use NetOS\Payments\Managers\InvoiceManager;
+use NetOS\Payments\Managers\RefundManager;
+use NetOS\Payments\Managers\TaxManager;
+use NetOS\Payments\Managers\WebhookManager;
 use Stripe\StripeClient;
 
 class PaymentsServiceProvider extends ServiceProvider
@@ -11,6 +18,19 @@ class PaymentsServiceProvider extends ServiceProvider
     public function register(): void
     {
         $this->mergeConfigFrom(__DIR__ . '/../config/payments.php', 'payments');
+
+        // Singletons, so a driver registered with extend() on a manager is the one Payments uses.
+        foreach ([
+            AccountManager::class,
+            CheckoutManager::class,
+            RefundManager::class,
+            InvoiceManager::class,
+            TaxManager::class,
+            DiscountCodeManager::class,
+            WebhookManager::class,
+        ] as $manager) {
+            $this->app->singleton($manager);
+        }
 
         $this->app->singleton(Payments::class);
         $this->app->singleton(

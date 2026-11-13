@@ -35,6 +35,7 @@ class DocumentController extends Controller
         $model = PaymentInvoice::query()->findOrFail($document);
 
         abort_if($model->pdf_path === null || $model->pdf_disk === null, 404);
+        abort_unless(Storage::disk($model->pdf_disk)->exists($model->pdf_path), 404);
 
         return Storage::disk($model->pdf_disk)->response(
             $model->pdf_path,
